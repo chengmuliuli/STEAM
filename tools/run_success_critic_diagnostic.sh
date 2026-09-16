@@ -2,14 +2,27 @@
 set -euo pipefail
 
 REPO_PATH="${REPO_PATH:?Set REPO_PATH to the RLinf checkout}"
-RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the converted rollout workspace}"
-CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1_success_clb_b2}"
+RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the STEAM experiment workspace}"
+CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1_diag_b2}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
+DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-512}"
+EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES:-0}"
+EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS:-0}"
+EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES:-0}"
+DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${RUN_ROOT}/steam_diagnostics/${CRITIC_CONFIG}}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
+CONFIG_DIR="${REPO_PATH}/examples/offline_rl/config"
 LOG_ROOT="${RUN_ROOT}/steam_value_training/queued_success_critic"
-mkdir -p "${LOG_ROOT}"
+mkdir -p "${LOG_ROOT}" "${DIAGNOSTIC_DIR}"
 exec > >(tee -a "${LOG_ROOT}/queue.log") 2>&1
 
-export PATH="${REPO_PATH}/.venv/bin:${PATH}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "ERROR: Python interpreter is not executable: ${PYTHON_BIN}" >&2
+    echo "Set PYTHON_BIN explicitly if this checkout uses another environment." >&2
+    exit 2
+fi
+
+export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${REPO_PATH}/tools:${REPO_PATH}:${PYTHONPATH:-}"
 export HF_HOME="${RUN_ROOT}/hf_cache"
 export HF_DATASETS_CACHE="${RUN_ROOT}/hf_datasets_cache"
@@ -21,8 +34,51 @@ export PYOPENGL_PLATFORM=egl
 export AV_LOG_FORCE_NOCOLOR=1
 export LIBAV_LOG_LEVEL=quiet
 export OPENCV_LOG_LEVEL=off
+export STEAM_BINARY_STRICT_K=1
 
-echo "$(date '+%F %T') queued success-only critic diagnostic"
+CONFIG_PATH="${CONFIG_DIR}/${CRITIC_CONFIG}.yaml"
+if [[ ! -f "${CONFIG_PATH}" ]]; then
+    echo "ERROR: binary diagnostic config not found: ${CONFIG_PATH}" >&2
+    echo "Generate it first with tools/generate_xr1_steam_configs.py --success-only --num-bins 2." >&2
+    exit 2
+fi
+
+cd "${REPO_PATH}"
+"${PYTHON_BIN}" tools/validate_steam_success_config.py \
+    --config "${CONFIG_PATH}" \
+    --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}" \
+    --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}" \
+    --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}"
+
+readarray -t CONFIG_FIELDS < <("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
+import sys
+from omegaconf import OmegaConf
+cfg = OmegaConf.load(sys.argv[1])
+print(int(cfg.actor.model.num_bins))
+print(int(cfg.data.get("seed", 42)))
+print(cfg.runner.logger.log_path)
+print(cfg.runner.logger.experiment_name)
+PY
+)
+CONFIG_NUM_BINS="${CONFIG_FIELDS[0]}"
+export STEAM_PAIR_SEED="${CONFIG_FIELDS[1]}"
+VALUE_LOG_PATH="${CONFIG_FIELDS[2]}"
+VALUE_EXPERIMENT_NAME="${CONFIG_FIELDS[3]}"
+
+if [[ "${CONFIG_NUM_BINS}" != "2" ]]; then
+    echo "ERROR: ${CONFIG_PATH} has num_bins=${CONFIG_NUM_BINS}; this diagnostic requires 2 bins." >&2
+    exit 2
+fi
+
+"${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
+    --config "${CONFIG_PATH}" \
+    --output-dir "${DIAGNOSTIC_DIR}/pretrain" \
+    --samples-per-dataset 64 \
+    --save-pairs 12
+
+echo "$(date '+%F %T') queued success-only fixed-k binary critic diagnostic"
+echo "Python: ${PYTHON_BIN}"
+echo "STEAM_PAIR_SEED=${STEAM_PAIR_SEED} (from data.seed); strict_binary_k=${STEAM_BINARY_STRICT_K}"
 echo "Waiting for any GPU to have at least ${MIN_FREE_MIB} MiB free."
 while true; do
     gpu_info="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null || true)"
@@ -37,11 +93,36 @@ while true; do
     sleep 60
 done
 
-cd "${REPO_PATH}"
-echo "$(date '+%F %T') starting critic config ${CRITIC_CONFIG}"
-bash examples/offline_rl/advantage_labeling/steam/run_steam_sft.sh \
-    "${CRITIC_CONFIG}" \
-    runner.max_steps=512 \
-    runner.save_interval=256 \
-    actor.optim.total_training_steps=512
-echo "$(date '+%F %T') success-only 2-bin critic diagnostic finished"
+CHECKPOINT_PATH="${VALUE_LOG_PATH}/${VALUE_EXPERIMENT_NAME}/checkpoints/global_step_${DIAGNOSTIC_STEPS}/actor"
+
+echo "$(date '+%F %T') starting 2-bin fixed-k overfit diagnostic with ${CRITIC_CONFIG}"
+
+"${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/train_steam.py \
+    --config-path "${CONFIG_DIR}" \
+    --config-name "${CRITIC_CONFIG}" \
+    actor.model.num_bins=2 \
+    actor.model.ensemble_size=1 \
+    actor.model.freeze_vision_encoder=true \
+    actor.model.freeze_language_model=true \
+    actor.model.label_smoothing=0.0 \
+    actor.micro_batch_size=8 \
+    actor.global_batch_size=8 \
+    actor.optim.lr_warmup_steps=0 \
+    runner.max_steps="${DIAGNOSTIC_STEPS}" \
+    runner.save_interval="${DIAGNOSTIC_STEPS}" \
+    actor.optim.total_training_steps="${DIAGNOSTIC_STEPS}"
+
+if [[ ! -e "${CHECKPOINT_PATH}" ]]; then
+    echo "ERROR: expected diagnostic checkpoint not found: ${CHECKPOINT_PATH}" >&2
+    exit 4
+fi
+
+"${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
+    --config "${CONFIG_PATH}" \
+    --output-dir "${DIAGNOSTIC_DIR}/posttrain" \
+    --samples-per-dataset 64 \
+    --save-pairs 4 \
+    --checkpoint "${CHECKPOINT_PATH}" \
+    --device cuda
+
+echo "$(date '+%F %T') PASS success-only fixed-k 2-bin critic diagnostic"

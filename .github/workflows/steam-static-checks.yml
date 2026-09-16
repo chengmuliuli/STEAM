@@ -1,0 +1,31 @@
+name: STEAM static checks
+
+on:
+  pull_request:
+  push:
+    branches:
+      - fix/steam-diagnostics-cfgrl
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Python syntax
+        run: |
+          python -m py_compile \
+            tools/steam_runtime_compat.py \
+            tools/generate_xr1_steam_configs.py \
+            tools/validate_steam_success_config.py \
+            tools/diagnose_steam_pairs.py \
+            tools/evaluate_steam_multibin_checkpoint.py \
+            tools/smoke_openpi_cfg_init.py \
+            rlinf/models/embodiment/openpi_cfg/__init__.py
+      - name: Bash syntax
+        run: |
+          bash -n tools/run_success_critic_diagnostic.sh
+          bash -n tools/run_steam_multibin_diagnostic.sh
+          bash -n tools/run_xr1_steam_pipeline.sh
