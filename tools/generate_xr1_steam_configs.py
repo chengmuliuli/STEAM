@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate RLinf STEAM/CFG-RL configs for converted XR-1 RoboCasa rollouts."""
+"""Generate reproducible RLinf STEAM/CFG-RL configs for XR-1 RoboCasa rollouts."""
 from __future__ import annotations
 
 import argparse
@@ -7,13 +7,18 @@ import json
 from pathlib import Path
 
 
-VISION = "/path/to/models/steam/siglip-so400m-patch14-384"
-LANGUAGE = "/path/to/models/steam/gemma-3-270m"
-PI05 = "/path/to/pi05-robocasa-human300-pytorch"
+DEFAULT_VISION = "/path/to/models/steam/siglip-so400m-patch14-384"
+DEFAULT_LANGUAGE = "/path/to/models/steam/gemma-3-270m"
+DEFAULT_PI05 = "/path/to/pi05-robocasa-human300-pytorch"
+K = 32
+CAMERAS = (
+    "observation.images.robot0_agentview_left",
+    "observation.images.robot0_eye_in_hand",
+)
 
 
 def find_v30_leaves(root: Path) -> list[Path]:
-    leaves = []
+    leaves: list[Path] = []
     for path in sorted(root.rglob("lerobot")):
         info_path = path / "meta" / "info.json"
         if not info_path.is_file():
@@ -27,6 +32,62 @@ def find_v30_leaves(root: Path) -> list[Path]:
     return leaves
 
 
+def _normal_success_paths(paths: list[Path]) -> list[Path]:
+    return [path for path in paths if "normal_success" in path.parts]
+
+
+def validate_success_leaf(path: Path) -> tuple[int, int]:
+    """Verify that every episode in a normal_success LeRobot leaf is successful.
+
+    We intentionally validate the underlying rollout metadata before emitting an
+    ``sft`` entry.  PairDataset treats ``sft`` as all-success, so silently
+    trusting a directory name here would turn a mislabeled failure episode into
+    positive temporal-order supervision.
+    """
+    if "normal_success" not in path.parts:
+        raise ValueError(f"success-only critic path is not under normal_success: {path}")
+
+    try:
+        from rlinf.data.datasets.steam.pair_dataset import _LeRobotSource
+    except ImportError as exc:
+        raise RuntimeError(
+            "Strict success validation requires running this generator from the "
+            "RLinf checkout with the STEAM overlay on PYTHONPATH."
+        ) from exc
+
+    source = _LeRobotSource(str(path), only_success=False, dataset_type="rollout")
+    raw_dataset = source.base.hf_dataset
+    if "is_success" not in raw_dataset.column_names:
+        raise ValueError(
+            f"{path} has no is_success column. Refusing to mark it as type=sft. "
+            "Use --skip-success-content-validation only if the dataset creation "
+            "pipeline independently guarantees all episodes are successful."
+        )
+
+    column = raw_dataset.data.column("is_success")
+    bad: list[int] = []
+    for episode, start in enumerate(source._ep_starts):
+        if not source._coerce_success_flag(column[int(start)].as_py()):
+            bad.append(episode)
+
+    if bad:
+        preview = ", ".join(str(v) for v in bad[:16])
+        more = " ..." if len(bad) > 16 else ""
+        raise ValueError(
+            f"{path} contains {len(bad)} failed episode(s) despite normal_success: "
+            f"{preview}{more}"
+        )
+    return source.num_episodes(), len(bad)
+
+
+def validate_success_paths(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        episodes, _ = validate_success_leaf(path)
+        total += episodes
+    return total
+
+
 def dataset_entries(
     paths: list[Path],
     *,
@@ -34,7 +95,7 @@ def dataset_entries(
     include_only_success: bool = True,
     only_success: bool = False,
 ) -> str:
-    lines = []
+    lines: list[str] = []
     for path in paths:
         lines.append(f'    - dataset_path: "{path}"')
         lines.append(f"      type: {dataset_type}")
@@ -44,23 +105,39 @@ def dataset_entries(
     return "\n".join(lines)
 
 
+def _auto_tag(*, success_only: bool, num_bins: int, length_scale_enabled: bool,
+              length_scale_percentile: float, ensemble_size: int) -> str:
+    source = "succ" if success_only else "mixed"
+    scale = f"ls{length_scale_percentile:g}" if length_scale_enabled else "nols"
+    return f"steam_xr1_{source}_b{num_bins}_k{K}_{scale}_e{ensemble_size}"
+
+
 def value_config(
     paths: list[Path],
     *,
+    run_root: Path,
+    experiment_name: str,
     success_only: bool,
     num_bins: int,
     length_scale_enabled: bool,
     length_scale_percentile: float,
+    ensemble_size: int,
+    max_steps: int,
+    save_interval: int,
+    micro_batch_size: int,
+    global_batch_size: int,
+    vision_model: str,
+    language_model: str,
 ) -> str:
     dataset_type = "sft" if success_only else "rollout"
     success_flag = "true" if success_only else "false"
     length_flag = "true" if length_scale_enabled else "false"
     source_comment = (
-        "# Critic uses only normal_success trajectories as expert-like temporal supervision."
+        "# Critic uses validated normal_success trajectories as expert-like temporal supervision."
         if success_only
         else "# Critic uses all behavior-policy rollouts, including failed trajectories."
     )
-    return f"""# Auto-generated for Xiaomi XR-1 RoboCasa365.
+    return f"""# Auto-generated by tools/generate_xr1_steam_configs.py.
 {source_comment}
 defaults:
   - model/steam_value_model@actor.model
@@ -83,14 +160,14 @@ cluster:
 runner:
   task_type: sft
   logger:
-    log_path: "/path/to/steam_xr1_v30_copy/steam_value_training"
+    log_path: "{run_root / 'steam_value_training'}"
     project_name: rlinf
-    experiment_name: "steam_xr1_robocasa_value"
+    experiment_name: "{experiment_name}"
     logger_backends: ["tensorboard"]
   max_epochs: -1
-  max_steps: 16000
+  max_steps: {max_steps}
   val_check_interval: -1
-  save_interval: 1000
+  save_interval: {save_interval}
 
 data:
   train_data_paths:
@@ -99,9 +176,9 @@ data:
   seed: 42
   dataset_type: {dataset_type}
   camera_keys:
-    - observation.images.robot0_agentview_left
-    - observation.images.robot0_eye_in_hand
-  k: 32
+    - {CAMERAS[0]}
+    - {CAMERAS[1]}
+  k: {K}
   only_success: {success_flag}
   length_scale_enabled: {length_flag}
   length_scale_percentile: {length_scale_percentile:g}
@@ -119,8 +196,8 @@ algorithm:
 actor:
   group_name: "ActorGroup"
   training_backend: "fsdp"
-  micro_batch_size: 1
-  global_batch_size: 8
+  micro_batch_size: {micro_batch_size}
+  global_batch_size: {global_batch_size}
   seed: 0
 
   model:
@@ -130,15 +207,15 @@ actor:
     label_smoothing: 0.05
     num_frames_per_pair: 2
     num_bins: {num_bins}
-    vision_repo_id: "{VISION}"
-    language_repo_id: "{LANGUAGE}"
-    tokenizer_path: "{LANGUAGE}"
+    vision_repo_id: "{vision_model}"
+    language_repo_id: "{language_model}"
+    tokenizer_path: "{language_model}"
     freeze_vision_encoder: false
     freeze_language_model: false
     max_state_dim: 32
     state_discretization_bins: 256
     max_token_len: 200
-    ensemble_size: 1
+    ensemble_size: {ensemble_size}
     ensemble_head_seed_base: 0
     use_gradient_checkpointing: true
 
@@ -152,7 +229,7 @@ actor:
     clip_grad: 10.0
     lr_scheduler: constant
     lr_warmup_steps: 500
-    total_training_steps: 16000
+    total_training_steps: {max_steps}
     min_lr: 1.0e-6
 
   fsdp_config:
@@ -175,29 +252,31 @@ critic:
 def advantage_config(
     paths: list[Path],
     *,
+    value_checkpoint: str,
+    advantage_tag: str,
     length_scale_enabled: bool,
     length_scale_percentile: float,
 ) -> str:
     length_flag = "true" if length_scale_enabled else "false"
-    return f"""# Auto-generated for converted XR-1 RoboCasa365 rollouts.
+    return f"""# Auto-generated by tools/generate_xr1_steam_configs.py.
 advantage:
-  value_checkpoint: "/path/to/steam_xr1_v30_copy/steam_value_training/steam_xr1_robocasa_value/checkpoints/global_step_16000/actor"
+  value_checkpoint: "{value_checkpoint}"
   batch_size: 8
   num_dataloader_workers_per_gpu: 0
   prefetch_factor: 2
   label_mode: quantile
   rollout_quantile: 0.3
-  tag: steam_xr1_k32_value1
+  tag: "{advantage_tag}"
   model:
     precision: bf16
 
 data:
-  k: 32
+  k: {K}
   length_scale_enabled: {length_flag}
   length_scale_percentile: {length_scale_percentile:g}
   camera_keys:
-    - observation.images.robot0_agentview_left
-    - observation.images.robot0_eye_in_hand
+    - {CAMERAS[0]}
+    - {CAMERAS[1]}
   train_data_paths:
 {dataset_entries(paths, include_only_success=False)}
 
@@ -207,8 +286,16 @@ distributed:
 """
 
 
-def cfg_rl_config(paths: list[Path]) -> str:
-    return f"""# Auto-generated for CFG-RL with Pi05 RoboCasa365.
+def cfg_rl_config(
+    paths: list[Path],
+    *,
+    run_root: Path,
+    experiment_name: str,
+    advantage_tag: str,
+    pi05_model: str,
+    norm_stats_path: str,
+) -> str:
+    return f"""# Auto-generated by tools/generate_xr1_steam_configs.py.
 defaults:
   - model/pi0_5@actor.model
   - hybrid_engines/fsdp@actor.fsdp_config
@@ -230,9 +317,9 @@ cluster:
 runner:
   task_type: sft
   logger:
-    log_path: "/path/to/steam_xr1_v30_copy/cfg_rl_training"
+    log_path: "{run_root / 'cfg_rl_training'}"
     project_name: rlinf
-    experiment_name: "cfg_rl_xr1_robocasa"
+    experiment_name: "{experiment_name}"
     logger_backends: ["tensorboard"]
   max_epochs: 30000
   max_steps: -1
@@ -241,7 +328,7 @@ runner:
 
 data:
   num_workers: 0
-  advantage_tag: steam_xr1_k32_value1
+  advantage_tag: "{advantage_tag}"
   balance_dataset_weights: true
   seed: 42
   train_data_paths:
@@ -259,7 +346,7 @@ actor:
 
   model:
     precision: null
-    model_path: "{PI05}"
+    model_path: "{pi05_model}"
     model_type: cfg_model
     add_value_head: false
     num_action_chunks: 5
@@ -275,7 +362,7 @@ actor:
       unconditional_prob: 0.1
       positive_only_conditional: true
     openpi_data:
-      norm_stats_path: /path/to/steam_xr1_v30_copy/robocasa_norm_stats
+      norm_stats_path: "{norm_stats_path}"
       state_space: 16d
       image_space: 2views
       action_space: 12d
@@ -313,80 +400,122 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
-    parser.add_argument(
-        "--success-only",
-        action="store_true",
-        help=(
-            "Use only normal_success datasets for critic training. "
-            "Advantage and CFG-RL configs retain all rollout datasets."
-        ),
-    )
-    parser.add_argument(
-        "--num-bins",
-        type=int,
-        default=32,
-        help="Critic temporal-offset bins. Use 2 for the binary diagnostic.",
-    )
-    parser.add_argument(
-        "--length-scale-enabled",
-        action="store_true",
-        help="Enable episode-length-normalized temporal offsets for multi-bin critic training.",
-    )
-    parser.add_argument(
-        "--length-scale-percentile",
-        type=float,
-        default=90.0,
-        help="Reference episode-length percentile used when length scaling is enabled.",
-    )
+    parser.add_argument("--run-root", type=Path, default=None)
+    parser.add_argument("--success-only", action="store_true")
+    parser.add_argument("--skip-success-content-validation", action="store_true")
+    parser.add_argument("--num-bins", type=int, default=32)
+    parser.add_argument("--length-scale-enabled", action="store_true")
+    parser.add_argument("--length-scale-percentile", type=float, default=90.0)
+    parser.add_argument("--ensemble-size", type=int, default=1)
+    parser.add_argument("--value-max-steps", type=int, default=16000)
+    parser.add_argument("--value-save-interval", type=int, default=1000)
+    parser.add_argument("--micro-batch-size", type=int, default=1)
+    parser.add_argument("--global-batch-size", type=int, default=8)
+    parser.add_argument("--value-experiment-name", default="steam_xr1_robocasa_value")
+    parser.add_argument("--cfg-experiment-name", default="cfg_rl_xr1_robocasa")
+    parser.add_argument("--value-checkpoint", default=None)
+    parser.add_argument("--advantage-tag", default=None)
+    parser.add_argument("--vision-model", default=DEFAULT_VISION)
+    parser.add_argument("--language-model", default=DEFAULT_LANGUAGE)
+    parser.add_argument("--pi05-model", default=DEFAULT_PI05)
+    parser.add_argument("--norm-stats-path", default=None)
     args = parser.parse_args()
 
     if args.num_bins < 2 or args.num_bins % 2 != 0:
         raise ValueError("--num-bins must be even and >= 2")
-    if args.num_bins > 2 and (2 * 32) % args.num_bins != 0:
+    if args.num_bins > 2 and (2 * K) % args.num_bins != 0:
         raise ValueError(
-            f"For k=32, 2*k=64 must be divisible by num_bins; got {args.num_bins}"
+            f"For k={K}, 2*k={2*K} must be divisible by num_bins; got {args.num_bins}"
         )
     if not 0.0 < args.length_scale_percentile <= 100.0:
         raise ValueError("--length-scale-percentile must be in (0, 100]")
+    if args.ensemble_size < 1:
+        raise ValueError("--ensemble-size must be >= 1")
+    if args.value_max_steps < 1:
+        raise ValueError("--value-max-steps must be >= 1")
 
-    paths = find_v30_leaves(args.data_root.resolve())
+    data_root = args.data_root.resolve()
+    run_root = (args.run_root or data_root).resolve()
+    paths = find_v30_leaves(data_root)
     if not paths:
-        raise RuntimeError(f"no converted v3.0 LeRobot leaves below {args.data_root}")
+        raise RuntimeError(f"no converted v3.0 LeRobot leaves below {data_root}")
 
     critic_paths = paths
     if args.success_only:
-        critic_paths = [path for path in paths if "normal_success" in path.parts]
+        critic_paths = _normal_success_paths(paths)
         if not critic_paths:
             raise RuntimeError(
                 "--success-only was requested, but no normal_success datasets were found"
             )
+        if not args.skip_success_content_validation:
+            total_eps = validate_success_paths(critic_paths)
+            print(
+                f"validated success-only critic data: {len(critic_paths)} leaf dataset(s), "
+                f"{total_eps} successful episode(s)"
+            )
+
+    advantage_tag = args.advantage_tag or _auto_tag(
+        success_only=args.success_only,
+        num_bins=args.num_bins,
+        length_scale_enabled=args.length_scale_enabled,
+        length_scale_percentile=args.length_scale_percentile,
+        ensemble_size=args.ensemble_size,
+    )
+    value_checkpoint = args.value_checkpoint or str(
+        run_root
+        / "steam_value_training"
+        / args.value_experiment_name
+        / "checkpoints"
+        / f"global_step_{args.value_max_steps}"
+        / "actor"
+    )
+    norm_stats_path = args.norm_stats_path or str(run_root / "robocasa_norm_stats")
 
     args.config_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
         "steam_value_model_sft_robocasa_xr1.yaml": value_config(
             critic_paths,
+            run_root=run_root,
+            experiment_name=args.value_experiment_name,
             success_only=args.success_only,
             num_bins=args.num_bins,
             length_scale_enabled=args.length_scale_enabled,
             length_scale_percentile=args.length_scale_percentile,
+            ensemble_size=args.ensemble_size,
+            max_steps=args.value_max_steps,
+            save_interval=args.value_save_interval,
+            micro_batch_size=args.micro_batch_size,
+            global_batch_size=args.global_batch_size,
+            vision_model=args.vision_model,
+            language_model=args.language_model,
         ),
         "steam_compute_advantages_robocasa_xr1.yaml": advantage_config(
             paths,
+            value_checkpoint=value_checkpoint,
+            advantage_tag=advantage_tag,
             length_scale_enabled=args.length_scale_enabled,
             length_scale_percentile=args.length_scale_percentile,
         ),
-        "cfg_rl_openpi_robocasa_xr1.yaml": cfg_rl_config(paths),
+        "cfg_rl_openpi_robocasa_xr1.yaml": cfg_rl_config(
+            paths,
+            run_root=run_root,
+            experiment_name=args.cfg_experiment_name,
+            advantage_tag=advantage_tag,
+            pi05_model=args.pi05_model,
+            norm_stats_path=norm_stats_path,
+        ),
     }
     for name, content in outputs.items():
-        (args.config_dir / name).write_text(content, encoding="utf-8")
+        path = args.config_dir / name
+        path.write_text(content, encoding="utf-8")
         count = len(critic_paths) if name.startswith("steam_value_model") else len(paths)
-        print(f"wrote {args.config_dir / name} ({count} datasets)")
+        print(f"wrote {path} ({count} datasets)")
 
     print(
-        "critic settings: "
+        "generated settings: "
         f"success_only={args.success_only}, num_bins={args.num_bins}, "
-        f"length_scale_enabled={args.length_scale_enabled}, "
-        f"length_scale_percentile={args.length_scale_percentile:g}"
+        f"length_scale={args.length_scale_enabled}, ensemble={args.ensemble_size}, "
+        f"value_checkpoint={value_checkpoint}, advantage_tag={advantage_tag}"
     )
     return 0
 
