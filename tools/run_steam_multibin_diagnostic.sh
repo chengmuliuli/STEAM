@@ -42,7 +42,6 @@ export PYOPENGL_PLATFORM=egl
 export AV_LOG_FORCE_NOCOLOR=1
 export LIBAV_LOG_LEVEL=quiet
 export OPENCV_LOG_LEVEL=off
-export STEAM_PAIR_SEED="${STEAM_PAIR_SEED:-42}"
 unset STEAM_BINARY_STRICT_K || true
 
 cd "${REPO_PATH}"
@@ -66,26 +65,34 @@ cd "${REPO_PATH}"
     --language-model "${STEAM_LANGUAGE_MODEL}"
 
 "${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
+export STEAM_PAIR_SEED="$("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
+import sys
+from omegaconf import OmegaConf
+cfg = OmegaConf.load(sys.argv[1])
+print(int(cfg.data.get("seed", 42)))
+PY
+)"
+
 "${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${CONFIG_PATH}" \
     --output-dir "${DIAGNOSTIC_DIR}/pretrain" \
     --samples-per-dataset 128 \
     --save-pairs 8
 
-gpu_info="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null || true)"
-free_gpu="$(printf '%s\n' "${gpu_info}" | awk -F, -v min="${MIN_FREE_MIB}" '$2+0 >= min {gsub(/ /, "", $1); print $1; exit}')"
-if [[ ! "${free_gpu}" =~ ^[0-9]+$ ]]; then
-    echo "ERROR: no GPU has at least ${MIN_FREE_MIB} MiB free" >&2
-    printf '%s\n' "${gpu_info}" >&2
-    exit 5
-fi
-export CUDA_VISIBLE_DEVICES="${free_gpu}"
+while true; do
+    gpu_info="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null || true)"
+    free_gpu="$(printf '%s\n' "${gpu_info}" | awk -F, -v min="${MIN_FREE_MIB}" '$2+0 >= min {gsub(/ /, "", $1); print $1; exit}')"
+    if [[ "${free_gpu}" =~ ^[0-9]+$ ]]; then
+        export CUDA_VISIBLE_DEVICES="${free_gpu}"
+        break
+    fi
+    echo "$(date '+%F %T') all GPUs busy; retry in 60s"
+    sleep 60
+done
 
 echo "$(date '+%F %T') starting ${NUM_BINS}-bin intermediate critic diagnostic"
-echo "Python=${PYTHON_BIN}; seed=${STEAM_PAIR_SEED}; GPU=${free_gpu}"
+echo "Python=${PYTHON_BIN}; data.seed=${STEAM_PAIR_SEED}; GPU=${free_gpu}"
 
-# Freeze the large backbones here as well: this stage asks whether fixed visual
-# features contain enough information to resolve coarse temporal distance.
 "${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/train_steam.py \
     --config-path "${CONFIG_DIR}" \
     --config-name "${CONFIG_NAME}" \
@@ -109,6 +116,7 @@ fi
     --checkpoint "${CHECKPOINT_PATH}" \
     --output "${DIAGNOSTIC_DIR}/posttrain_metrics.json" \
     --max-samples-per-dataset 256 \
-    --device cuda
+    --device cuda \
+    --seed "${STEAM_PAIR_SEED}"
 
 echo "$(date '+%F %T') PASS ${NUM_BINS}-bin intermediate STEAM diagnostic"
