@@ -7,10 +7,6 @@ import json
 from pathlib import Path
 
 
-CAMERAS = (
-    "observation.images.robot0_agentview_left",
-    "observation.images.robot0_eye_in_hand",
-)
 VISION = "/path/to/models/steam/siglip-so400m-patch14-384"
 LANGUAGE = "/path/to/models/steam/gemma-3-270m"
 PI05 = "/path/to/pi05-robocasa-human300-pytorch"
@@ -34,22 +30,38 @@ def find_v30_leaves(root: Path) -> list[Path]:
 def dataset_entries(
     paths: list[Path],
     *,
+    dataset_type: str = "rollout",
     include_only_success: bool = True,
     only_success: bool = False,
 ) -> str:
     lines = []
     for path in paths:
         lines.append(f'    - dataset_path: "{path}"')
-        lines.append("      type: rollout")
+        lines.append(f"      type: {dataset_type}")
         if include_only_success:
             lines.append(f"      only_success: {'true' if only_success else 'false'}")
         lines.append("      weight: 1.0")
     return "\n".join(lines)
 
 
-def value_config(paths: list[Path], *, only_success: bool = False) -> str:
-    return f"""# Auto-generated for Xiaomi XR-1 RoboCasa365 policy rollouts.
-# All entries are behavior-policy rollouts, including successful and failed episodes.
+def value_config(
+    paths: list[Path],
+    *,
+    success_only: bool,
+    num_bins: int,
+    length_scale_enabled: bool,
+    length_scale_percentile: float,
+) -> str:
+    dataset_type = "sft" if success_only else "rollout"
+    success_flag = "true" if success_only else "false"
+    length_flag = "true" if length_scale_enabled else "false"
+    source_comment = (
+        "# Critic uses only normal_success trajectories as expert-like temporal supervision."
+        if success_only
+        else "# Critic uses all behavior-policy rollouts, including failed trajectories."
+    )
+    return f"""# Auto-generated for Xiaomi XR-1 RoboCasa365.
+{source_comment}
 defaults:
   - model/steam_value_model@actor.model
   - hybrid_engines/fsdp@actor.fsdp_config
@@ -82,15 +94,17 @@ runner:
 
 data:
   train_data_paths:
-{dataset_entries(paths, only_success=only_success)}
+{dataset_entries(paths, dataset_type=dataset_type, only_success=success_only)}
   balance_weights: true
   seed: 42
-  dataset_type: rollout
+  dataset_type: {dataset_type}
   camera_keys:
     - observation.images.robot0_agentview_left
     - observation.images.robot0_eye_in_hand
   k: 32
-  only_success: {'true' if only_success else 'false'}
+  only_success: {success_flag}
+  length_scale_enabled: {length_flag}
+  length_scale_percentile: {length_scale_percentile:g}
   min_episode_length: null
   train_num_workers: 0
   eval_num_workers: 0
@@ -115,7 +129,7 @@ actor:
     dropout: 0.1
     label_smoothing: 0.05
     num_frames_per_pair: 2
-    num_bins: 32
+    num_bins: {num_bins}
     vision_repo_id: "{VISION}"
     language_repo_id: "{LANGUAGE}"
     tokenizer_path: "{LANGUAGE}"
@@ -158,7 +172,13 @@ critic:
 """
 
 
-def advantage_config(paths: list[Path]) -> str:
+def advantage_config(
+    paths: list[Path],
+    *,
+    length_scale_enabled: bool,
+    length_scale_percentile: float,
+) -> str:
+    length_flag = "true" if length_scale_enabled else "false"
     return f"""# Auto-generated for converted XR-1 RoboCasa365 rollouts.
 advantage:
   value_checkpoint: "/path/to/steam_xr1_v30_copy/steam_value_training/steam_xr1_robocasa_value/checkpoints/global_step_16000/actor"
@@ -173,6 +193,8 @@ advantage:
 
 data:
   k: 32
+  length_scale_enabled: {length_flag}
+  length_scale_percentile: {length_scale_percentile:g}
   camera_keys:
     - observation.images.robot0_agentview_left
     - observation.images.robot0_eye_in_hand
@@ -295,14 +317,42 @@ def main() -> int:
         "--success-only",
         action="store_true",
         help=(
-            "Use only normal_success datasets for the value/critic config. "
+            "Use only normal_success datasets for critic training. "
             "Advantage and CFG-RL configs retain all rollout datasets."
         ),
     )
+    parser.add_argument(
+        "--num-bins",
+        type=int,
+        default=32,
+        help="Critic temporal-offset bins. Use 2 for the binary diagnostic.",
+    )
+    parser.add_argument(
+        "--length-scale-enabled",
+        action="store_true",
+        help="Enable episode-length-normalized temporal offsets for multi-bin critic training.",
+    )
+    parser.add_argument(
+        "--length-scale-percentile",
+        type=float,
+        default=90.0,
+        help="Reference episode-length percentile used when length scaling is enabled.",
+    )
     args = parser.parse_args()
+
+    if args.num_bins < 2 or args.num_bins % 2 != 0:
+        raise ValueError("--num-bins must be even and >= 2")
+    if args.num_bins > 2 and (2 * 32) % args.num_bins != 0:
+        raise ValueError(
+            f"For k=32, 2*k=64 must be divisible by num_bins; got {args.num_bins}"
+        )
+    if not 0.0 < args.length_scale_percentile <= 100.0:
+        raise ValueError("--length-scale-percentile must be in (0, 100]")
+
     paths = find_v30_leaves(args.data_root.resolve())
     if not paths:
         raise RuntimeError(f"no converted v3.0 LeRobot leaves below {args.data_root}")
+
     critic_paths = paths
     if args.success_only:
         critic_paths = [path for path in paths if "normal_success" in path.parts]
@@ -310,18 +360,34 @@ def main() -> int:
             raise RuntimeError(
                 "--success-only was requested, but no normal_success datasets were found"
             )
+
     args.config_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
         "steam_value_model_sft_robocasa_xr1.yaml": value_config(
-            critic_paths, only_success=args.success_only
+            critic_paths,
+            success_only=args.success_only,
+            num_bins=args.num_bins,
+            length_scale_enabled=args.length_scale_enabled,
+            length_scale_percentile=args.length_scale_percentile,
         ),
-        "steam_compute_advantages_robocasa_xr1.yaml": advantage_config(paths),
+        "steam_compute_advantages_robocasa_xr1.yaml": advantage_config(
+            paths,
+            length_scale_enabled=args.length_scale_enabled,
+            length_scale_percentile=args.length_scale_percentile,
+        ),
         "cfg_rl_openpi_robocasa_xr1.yaml": cfg_rl_config(paths),
     }
     for name, content in outputs.items():
         (args.config_dir / name).write_text(content, encoding="utf-8")
         count = len(critic_paths) if name.startswith("steam_value_model") else len(paths)
         print(f"wrote {args.config_dir / name} ({count} datasets)")
+
+    print(
+        "critic settings: "
+        f"success_only={args.success_only}, num_bins={args.num_bins}, "
+        f"length_scale_enabled={args.length_scale_enabled}, "
+        f"length_scale_percentile={args.length_scale_percentile:g}"
+    )
     return 0
 
 
