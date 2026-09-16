@@ -34,8 +34,6 @@ fi
 mkdir -p "${LOG_ROOT}"
 exec > >(tee -a "${LOG_ROOT}/pipeline.log") 2>&1
 
-# Never mix /usr/bin/python with packages borrowed from .venv.  Subprocesses
-# that invoke `python` pick up the same selected virtualenv via PATH.
 export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${REPO_PATH}/tools:${REPO_PATH}:${PYTHONPATH:-}"
 export REPO_PATH RUN_ROOT DATA_ROOT
@@ -49,7 +47,6 @@ export LIBAV_LOG_LEVEL=quiet
 export OPENCV_LOG_LEVEL=off
 export RAY_ADDRESS="${RAY_ADDRESS:-127.0.0.1:47999}"
 export RAY_TMPDIR="${RAY_TMPDIR:-/tmp/qgl-ray-steam}"
-export STEAM_PAIR_SEED="${STEAM_PAIR_SEED:-42}"
 mkdir -p "${RAY_TMPDIR}"
 
 cd "${REPO_PATH}"
@@ -59,7 +56,6 @@ echo "repo_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "repo_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 echo "data_root=${DATA_ROOT}"
 echo "run_root=${RUN_ROOT}"
-echo "steam_pair_seed=${STEAM_PAIR_SEED}"
 echo "formal_ensemble_size=${FORMAL_ENSEMBLE_SIZE}"
 
 # ---------------------------------------------------------------------------
@@ -94,8 +90,6 @@ fi
 
 # ---------------------------------------------------------------------------
 # Stage B: coarse temporal-distance diagnostic (8 bins, no length scaling).
-# This distinguishes "direction is learnable" from "temporal distance is
-# learnable" before asking the model to resolve the much finer 32-bin target.
 # ---------------------------------------------------------------------------
 if [[ "${RUN_8BIN_DIAGNOSTIC}" != "0" ]]; then
     NUM_BINS=8 \
@@ -107,14 +101,10 @@ if [[ "${RUN_8BIN_DIAGNOSTIC}" != "0" ]]; then
         bash tools/run_steam_multibin_diagnostic.sh
 fi
 
-# Binary strict mode is only for Stage A; formal multi-bin training must not
-# inherit it from a caller's shell.
 unset STEAM_BINARY_STRICT_K || true
 
 # ---------------------------------------------------------------------------
 # Stage C: formal 32-bin normalized ensemble STEAM critic.
-# Generate value/advantage/CFG configs together so checkpoint, tag, length
-# scaling and CFG advantage_tag cannot drift apart.
 # ---------------------------------------------------------------------------
 "${PYTHON_BIN}" tools/generate_xr1_steam_configs.py \
     --data-root "${DATA_ROOT}" \
@@ -141,6 +131,18 @@ ADV_CONFIG="${CONFIG_PATH}/steam_compute_advantages_robocasa_xr1.yaml"
 CFG_CONFIG="${CONFIG_PATH}/cfg_rl_openpi_robocasa_xr1.yaml"
 FORMAL_CHECKPOINT="${RUN_ROOT}/steam_value_training/steam_xr1_robocasa_value/checkpoints/global_step_${FORMAL_STEPS}/actor"
 
+# The active YAML is the single source of truth for both mixture sampling and
+# temporal-stride sampling.  PairDataset reads this exported seed via the runtime
+# compatibility shim.
+export STEAM_PAIR_SEED="$("${PYTHON_BIN}" - "${VALUE_CONFIG}" <<'PY'
+import sys
+from omegaconf import OmegaConf
+cfg = OmegaConf.load(sys.argv[1])
+print(int(cfg.data.get("seed", 42)))
+PY
+)"
+echo "formal data.seed / STEAM_PAIR_SEED=${STEAM_PAIR_SEED}"
+
 "${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${VALUE_CONFIG}"
 "${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${VALUE_CONFIG}" \
@@ -148,8 +150,6 @@ FORMAL_CHECKPOINT="${RUN_ROOT}/steam_value_training/steam_xr1_robocasa_value/che
     --samples-per-dataset 64 \
     --save-pairs 12
 
-# Optional GPU pinning. If unset, leave visibility untouched so the user's
-# Ray/distributed setup can use all selected GPUs.
 if [[ -n "${PIPELINE_CUDA_VISIBLE_DEVICES:-}" ]]; then
     export CUDA_VISIBLE_DEVICES="${PIPELINE_CUDA_VISIBLE_DEVICES}"
     echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
@@ -178,6 +178,7 @@ fi
     --output "${RUN_ROOT}/steam_diagnostics/formal_posttrain_metrics.json" \
     --max-samples-per-dataset 256 \
     --device cuda \
+    --seed "${STEAM_PAIR_SEED}" \
     --min-ce-improvement "${FORMAL_MIN_CE_IMPROVEMENT}" \
     --min-exact-improvement "${FORMAL_MIN_EXACT_IMPROVEMENT}" \
     --min-neighbor-improvement "${FORMAL_MIN_NEIGHBOR_IMPROVEMENT}"
