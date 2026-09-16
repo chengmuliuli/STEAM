@@ -8,6 +8,8 @@ pair sampling reproducible without carrying a fork of RLinf's large SFT worker:
   state, so worker count / access order do not change labels;
 * positive and negative logical samples for the same anchor use the same
   physical stride and are exact reversals;
+* mixture epochs are forwarded into every child PairDataset so the deterministic
+  stride still changes from epoch to epoch;
 * binary diagnostics can opt into ``STEAM_BINARY_STRICT_K=1`` so tail anchors
   with ``t + k >= T`` are excluded instead of clamped to a shorter stride.
 
@@ -66,6 +68,7 @@ try:
         _scaled_signed_stride_to_bin,
         _signed_stride_to_bin,
     )
+    from rlinf.data.datasets.steam.mixture import PairMixtureDataset
     from rlinf.data.datasets.steam.pair_dataset import PairDataset, _LeRobotSource
 
     # ------------------------------------------------------------------
@@ -97,6 +100,7 @@ try:
     _orig_pair_init = PairDataset.__init__
     _orig_pair_len = PairDataset.__len__
     _orig_pair_getitem = PairDataset.__getitem__
+    _orig_mixture_set_epoch = PairMixtureDataset.set_epoch
 
     def _env_flag(name: str, default: bool = False) -> bool:
         raw = os.environ.get(name)
@@ -134,7 +138,7 @@ try:
             anchors: list[tuple[int, int]] = []
             for episode in self._eligible:
                 episode_length = int(self._source.episode_length(episode))
-                # Exactly t -> t+k.  No boundary clamp is allowed.
+                # Exactly t -> t+k. No boundary clamp is allowed.
                 for t in range(max(0, episode_length - int(self.k))):
                     anchors.append((int(episode), int(t)))
             if not anchors:
@@ -146,6 +150,16 @@ try:
 
     def deterministic_pair_set_epoch(self, epoch: int) -> None:
         self._steam_pair_epoch = int(epoch)
+
+    def deterministic_mixture_set_epoch(self, epoch: int) -> None:
+        # ReCapMixtureDataset changes which child/index is sampled each epoch,
+        # but upstream does not forward the epoch into child datasets. STEAM's
+        # deterministic stride sampler needs that propagation so a revisited
+        # temporal anchor can see another (still reproducible) stride next epoch.
+        _orig_mixture_set_epoch(self, int(epoch))
+        for dataset in self.datasets:
+            if hasattr(dataset, "set_epoch"):
+                dataset.set_epoch(int(epoch))
 
     def deterministic_pair_len(self) -> int:
         anchors = getattr(self, "_steam_strict_binary_anchors", None)
@@ -175,8 +189,6 @@ try:
             frame_idx_tk,
             camera_keys=self.camera_keys,
         )
-        # Preserve upstream behavior: language is resolved from the temporal
-        # anchor even for the reversed sample.
         if frame_idx_t == anchor_t:
             prompt_sample = raw_t
         elif frame_idx_tk == anchor_t:
@@ -221,9 +233,6 @@ try:
                 label=0,
             )
 
-        # Preserve upstream binary semantics unless the strict diagnostic flag
-        # is enabled.  Formal STEAM uses multi-bin and therefore takes the path
-        # below.
         if int(self.num_bins) == 2:
             return _orig_pair_getitem(self, idx)
 
@@ -238,7 +247,7 @@ try:
 
         # Stateless random draw. Positive and negative samples for the same
         # pair_position deliberately share the same draw and are exact physical
-        # reversals.  The epoch changes the draw while worker scheduling and
+        # reversals. The epoch changes the draw while worker scheduling and
         # access order cannot.
         seed_sequence = np.random.SeedSequence(
             [
@@ -286,9 +295,10 @@ try:
     PairDataset.set_epoch = deterministic_pair_set_epoch
     PairDataset.__len__ = deterministic_pair_len
     PairDataset.__getitem__ = deterministic_pair_getitem
+    PairMixtureDataset.set_epoch = deterministic_mixture_set_epoch
 
 except Exception as exc:
     # Keep sitecustomize import from making unrelated commands unusable, but
     # surface the reason when requested for debugging.
-    if _env_flag := os.environ.get("STEAM_RUNTIME_COMPAT_VERBOSE"):
+    if os.environ.get("STEAM_RUNTIME_COMPAT_VERBOSE"):
         print(f"[steam_runtime_compat] PairDataset patch skipped: {exc!r}")
