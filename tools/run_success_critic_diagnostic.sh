@@ -3,7 +3,7 @@ set -euo pipefail
 
 REPO_PATH="${REPO_PATH:?Set REPO_PATH to the RLinf checkout}"
 RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the converted rollout workspace}"
-CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1}"
+CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1_diag_b2}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
 DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-512}"
 DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${RUN_ROOT}/steam_diagnostics/${CRITIC_CONFIG}}"
@@ -26,22 +26,35 @@ export OPENCV_LOG_LEVEL=off
 
 CONFIG_PATH="${REPO_PATH}/examples/offline_rl/config/${CRITIC_CONFIG}.yaml"
 if [[ ! -f "${CONFIG_PATH}" ]]; then
-    echo "ERROR: critic config not found: ${CONFIG_PATH}" >&2
-    echo "Generate one with:" >&2
-    echo "  python tools/generate_xr1_steam_configs.py --data-root \"${RUN_ROOT}\" --config-dir \"${REPO_PATH}/examples/offline_rl/config\" --success-only --num-bins 2" >&2
+    echo "ERROR: binary diagnostic config not found: ${CONFIG_PATH}" >&2
+    echo "Generate it with:" >&2
+    echo "  python tools/generate_xr1_steam_configs.py \\" >&2
+    echo "    --data-root \"${RUN_ROOT}\" \\" >&2
+    echo "    --config-dir \"${REPO_PATH}/examples/offline_rl/config\" \\" >&2
+    echo "    --config-suffix _diag_b2 --success-only --num-bins 2 \\" >&2
+    echo "    --value-max-steps ${DIAGNOSTIC_STEPS} --value-save-interval ${DIAGNOSTIC_STEPS} \\" >&2
+    echo "    --value-experiment-name steam_xr1_success_diag_b2" >&2
     exit 2
 fi
 
 cd "${REPO_PATH}"
 
-# Parse the YAML rather than grepping it: every dataset entry is checked and,
-# by default, every normal_success leaf is verified against its is_success
-# metadata before we trust the SFT semantics.
+# Parse every YAML entry and verify every episode is genuinely successful.
 python tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
 
-# Inspect actual decoded temporal pairs before spending GPU time.  This writes
-# side-by-side images, signed strides, a label histogram, and an exact
-# forward/reverse label-symmetry check for binary PairDataset mode.
+CONFIG_NUM_BINS="$(python - "${CONFIG_PATH}" <<'PY'
+import sys
+from omegaconf import OmegaConf
+cfg = OmegaConf.load(sys.argv[1])
+print(int(cfg.actor.model.num_bins))
+PY
+)"
+if [[ "${CONFIG_NUM_BINS}" != "2" ]]; then
+    echo "ERROR: ${CONFIG_PATH} has num_bins=${CONFIG_NUM_BINS}; this diagnostic requires a dedicated 2-bin config." >&2
+    exit 2
+fi
+
+# Inspect the exact decoded pairs before GPU training.
 python tools/diagnose_steam_pairs.py \
     --config "${CONFIG_PATH}" \
     --output-dir "${DIAGNOSTIC_DIR}/pretrain" \
@@ -63,8 +76,6 @@ while true; do
     sleep 60
 done
 
-# Read experiment/log locations from the config so the post-training check does
-# not rely on another hard-coded checkpoint path.
 readarray -t CFG_FIELDS < <(python - "${CONFIG_PATH}" <<'PY'
 import sys
 from omegaconf import OmegaConf
@@ -79,10 +90,8 @@ CHECKPOINT_PATH="${VALUE_LOG_PATH}/${VALUE_EXPERIMENT_NAME}/checkpoints/global_s
 
 echo "$(date '+%F %T') starting 2-bin overfit diagnostic with ${CRITIC_CONFIG}"
 
-# Diagnostic goal: prove that pair/label/model/loss plumbing is learnable.
-# The final checkpoint is evaluated against the same physical pair in forward
-# and reverse temporal order.  The evaluator returns nonzero on a failed
-# loss/accuracy/flip-rate sanity threshold.
+# We still override the optimization-specific knobs so an accidentally edited
+# diagnostic YAML cannot reintroduce smoothing/warmup/backbone fine-tuning.
 bash examples/offline_rl/advantage_labeling/steam/run_steam_sft.sh \
     "${CRITIC_CONFIG}" \
     actor.model.num_bins=2 \
