@@ -2,10 +2,13 @@
 set -euo pipefail
 
 REPO_PATH="${REPO_PATH:?Set REPO_PATH to the RLinf checkout}"
-RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the converted rollout workspace}"
+RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the STEAM experiment workspace}"
 CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1_diag_b2}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
 DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-512}"
+EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES:-0}"
+EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS:-0}"
+EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES:-0}"
 DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${RUN_ROOT}/steam_diagnostics/${CRITIC_CONFIG}}"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
 CONFIG_DIR="${REPO_PATH}/examples/offline_rl/config"
@@ -36,18 +39,16 @@ export STEAM_BINARY_STRICT_K=1
 CONFIG_PATH="${CONFIG_DIR}/${CRITIC_CONFIG}.yaml"
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "ERROR: binary diagnostic config not found: ${CONFIG_PATH}" >&2
-    echo "Generate it with:" >&2
-    echo "  ${PYTHON_BIN} tools/generate_xr1_steam_configs.py \\" >&2
-    echo "    --data-root \"${RUN_ROOT}\" --run-root \"${RUN_ROOT}\" \\" >&2
-    echo "    --config-dir \"${CONFIG_DIR}\" --config-suffix _diag_b2 \\" >&2
-    echo "    --success-only --num-bins 2 --value-max-steps ${DIAGNOSTIC_STEPS} \\" >&2
-    echo "    --value-save-interval ${DIAGNOSTIC_STEPS} \\" >&2
-    echo "    --value-experiment-name steam_xr1_success_diag_b2" >&2
+    echo "Generate it first with tools/generate_xr1_steam_configs.py --success-only --num-bins 2." >&2
     exit 2
 fi
 
 cd "${REPO_PATH}"
-"${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
+"${PYTHON_BIN}" tools/validate_steam_success_config.py \
+    --config "${CONFIG_PATH}" \
+    --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}" \
+    --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}" \
+    --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}"
 
 readarray -t CONFIG_FIELDS < <("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
 import sys
