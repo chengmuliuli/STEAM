@@ -29,9 +29,10 @@ def main() -> int:
     for idx, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise TypeError(f"train_data_paths[{idx}] is not a mapping")
-        dataset_path = Path(str(entry.get("dataset_path", ""))).expanduser()
-        if not dataset_path:
+        raw_path = str(entry.get("dataset_path", "")).strip()
+        if not raw_path:
             raise ValueError(f"train_data_paths[{idx}] has no dataset_path")
+        dataset_path = Path(raw_path).expanduser()
         if "normal_success" not in dataset_path.parts:
             raise ValueError(
                 f"train_data_paths[{idx}] is not a normal_success leaf: {dataset_path}"
@@ -50,6 +51,8 @@ def main() -> int:
             )
 
         if not args.skip_episode_success_check:
+            if not dataset_path.exists():
+                raise FileNotFoundError(f"dataset path does not exist: {dataset_path}")
             episodes, _ = validate_success_leaf(dataset_path)
             total_episodes += episodes
 
