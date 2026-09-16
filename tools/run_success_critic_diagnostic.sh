@@ -31,10 +31,6 @@ export PYOPENGL_PLATFORM=egl
 export AV_LOG_FORCE_NOCOLOR=1
 export LIBAV_LOG_LEVEL=quiet
 export OPENCV_LOG_LEVEL=off
-
-# Reproducible temporal-pair sampling. Binary diagnostics are deliberately
-# strict: every sample is exactly +/-k frames, never a clamped short tail pair.
-export STEAM_PAIR_SEED="${STEAM_PAIR_SEED:-42}"
 export STEAM_BINARY_STRICT_K=1
 
 CONFIG_PATH="${CONFIG_DIR}/${CRITIC_CONFIG}.yaml"
@@ -53,13 +49,21 @@ fi
 cd "${REPO_PATH}"
 "${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
 
-CONFIG_NUM_BINS="$("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
+readarray -t CONFIG_FIELDS < <("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
 import sys
 from omegaconf import OmegaConf
 cfg = OmegaConf.load(sys.argv[1])
 print(int(cfg.actor.model.num_bins))
+print(int(cfg.data.get("seed", 42)))
+print(cfg.runner.logger.log_path)
+print(cfg.runner.logger.experiment_name)
 PY
-)"
+)
+CONFIG_NUM_BINS="${CONFIG_FIELDS[0]}"
+export STEAM_PAIR_SEED="${CONFIG_FIELDS[1]}"
+VALUE_LOG_PATH="${CONFIG_FIELDS[2]}"
+VALUE_EXPERIMENT_NAME="${CONFIG_FIELDS[3]}"
+
 if [[ "${CONFIG_NUM_BINS}" != "2" ]]; then
     echo "ERROR: ${CONFIG_PATH} has num_bins=${CONFIG_NUM_BINS}; this diagnostic requires 2 bins." >&2
     exit 2
@@ -73,7 +77,7 @@ fi
 
 echo "$(date '+%F %T') queued success-only fixed-k binary critic diagnostic"
 echo "Python: ${PYTHON_BIN}"
-echo "STEAM_PAIR_SEED=${STEAM_PAIR_SEED}; strict_binary_k=${STEAM_BINARY_STRICT_K}"
+echo "STEAM_PAIR_SEED=${STEAM_PAIR_SEED} (from data.seed); strict_binary_k=${STEAM_BINARY_STRICT_K}"
 echo "Waiting for any GPU to have at least ${MIN_FREE_MIB} MiB free."
 while true; do
     gpu_info="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null || true)"
@@ -88,23 +92,10 @@ while true; do
     sleep 60
 done
 
-readarray -t CFG_FIELDS < <("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
-import sys
-from omegaconf import OmegaConf
-cfg = OmegaConf.load(sys.argv[1])
-print(cfg.runner.logger.log_path)
-print(cfg.runner.logger.experiment_name)
-PY
-)
-VALUE_LOG_PATH="${CFG_FIELDS[0]}"
-VALUE_EXPERIMENT_NAME="${CFG_FIELDS[1]}"
 CHECKPOINT_PATH="${VALUE_LOG_PATH}/${VALUE_EXPERIMENT_NAME}/checkpoints/global_step_${DIAGNOSTIC_STEPS}/actor"
 
 echo "$(date '+%F %T') starting 2-bin fixed-k overfit diagnostic with ${CRITIC_CONFIG}"
 
-# Call train_steam.py directly. The upstream run_steam_sft.sh unconditionally
-# overrides runner.logger.log_path, which makes checkpoint discovery depend on
-# a timestamped shell log directory and breaks reproducible automation.
 "${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/train_steam.py \
     --config-path "${CONFIG_DIR}" \
     --config-name "${CRITIC_CONFIG}" \
