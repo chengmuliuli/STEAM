@@ -2,8 +2,15 @@
 set -euo pipefail
 
 REPO_PATH="${REPO_PATH:?Set REPO_PATH to the RLinf checkout containing this overlay}"
-RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the converted XR-1 rollout workspace}"
-DATA_ROOT="${DATA_ROOT:-${RUN_ROOT}}"
+RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the STEAM experiment workspace}"
+
+# DATA_ROOT remains a backwards-compatible shortcut for diagnostic/single-root
+# runs. Formal XR-1 runs should set CRITIC_DATA_ROOT to the verified success10
+# tree and ROLLOUT_DATA_ROOT to the full success+failure rollout tree.
+LEGACY_DATA_ROOT="${DATA_ROOT:-}"
+CRITIC_DATA_ROOT="${CRITIC_DATA_ROOT:-${LEGACY_DATA_ROOT:-${RUN_ROOT}}}"
+ROLLOUT_DATA_ROOT="${ROLLOUT_DATA_ROOT:-${LEGACY_DATA_ROOT:-${RUN_ROOT}}}"
+
 CONFIG_PATH="${REPO_PATH}/examples/offline_rl/config"
 LOG_ROOT="${RUN_ROOT}/pipeline"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
@@ -20,6 +27,12 @@ FORMAL_MIN_CE_IMPROVEMENT="${FORMAL_MIN_CE_IMPROVEMENT:-0.05}"
 FORMAL_MIN_EXACT_IMPROVEMENT="${FORMAL_MIN_EXACT_IMPROVEMENT:-0.01}"
 FORMAL_MIN_NEIGHBOR_IMPROVEMENT="${FORMAL_MIN_NEIGHBOR_IMPROVEMENT:-0.05}"
 
+# Current verified XR-1 success10 contract. Set any value to 0 to disable that
+# count check for a different dataset snapshot.
+EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES:-61}"
+EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS:-10}"
+EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES:-200}"
+
 : "${STEAM_VISION_MODEL:?Set STEAM_VISION_MODEL to the local SigLIP checkpoint}"
 : "${STEAM_LANGUAGE_MODEL:?Set STEAM_LANGUAGE_MODEL to the local Gemma checkpoint}"
 : "${PI05_MODEL:?Set PI05_MODEL to the local Pi0.5 checkpoint}"
@@ -30,13 +43,21 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     echo "Expected the RLinf virtualenv by default; set PYTHON_BIN explicitly if needed." >&2
     exit 2
 fi
+if [[ ! -d "${CRITIC_DATA_ROOT}" ]]; then
+    echo "ERROR: critic data root does not exist: ${CRITIC_DATA_ROOT}" >&2
+    exit 2
+fi
+if [[ ! -d "${ROLLOUT_DATA_ROOT}" ]]; then
+    echo "ERROR: rollout data root does not exist: ${ROLLOUT_DATA_ROOT}" >&2
+    exit 2
+fi
 
 mkdir -p "${LOG_ROOT}"
 exec > >(tee -a "${LOG_ROOT}/pipeline.log") 2>&1
 
 export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${REPO_PATH}/tools:${REPO_PATH}:${PYTHONPATH:-}"
-export REPO_PATH RUN_ROOT DATA_ROOT
+export REPO_PATH RUN_ROOT CRITIC_DATA_ROOT ROLLOUT_DATA_ROOT
 export HF_HOME="${RUN_ROOT}/hf_cache"
 export HF_DATASETS_CACHE="${RUN_ROOT}/hf_datasets_cache"
 export TRANSFORMERS_CACHE="${RUN_ROOT}/hf_cache/transformers"
@@ -54,21 +75,31 @@ echo "$(date '+%F %T') XR-1 STEAM pipeline starting."
 echo "python=${PYTHON_BIN}"
 echo "repo_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "repo_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
-echo "data_root=${DATA_ROOT}"
+echo "critic_data_root=${CRITIC_DATA_ROOT}"
+echo "rollout_data_root=${ROLLOUT_DATA_ROOT}"
 echo "run_root=${RUN_ROOT}"
+echo "expected_success_leaves=${EXPECTED_SUCCESS_LEAVES}"
+echo "expected_success_tasks=${EXPECTED_SUCCESS_TASKS}"
+echo "expected_success_episodes=${EXPECTED_SUCCESS_EPISODES}"
 echo "formal_ensemble_size=${FORMAL_ENSEMBLE_SIZE}"
 
 # ---------------------------------------------------------------------------
 # Stage A: fixed-k binary direction overfit diagnostic.
+# Only verified success trajectories are relevant here; diagnostic advantage /
+# CFG configs are unused, so both roots deliberately point to the success tree.
 # ---------------------------------------------------------------------------
 if [[ "${RUN_BINARY_DIAGNOSTIC}" != "0" ]]; then
     echo "$(date '+%F %T') generating fixed-k 2-bin diagnostic config."
     "${PYTHON_BIN}" tools/generate_xr1_steam_configs.py \
-        --data-root "${DATA_ROOT}" \
+        --critic-data-root "${CRITIC_DATA_ROOT}" \
+        --rollout-data-root "${CRITIC_DATA_ROOT}" \
         --run-root "${RUN_ROOT}" \
         --config-dir "${CONFIG_PATH}" \
         --config-suffix _diag_b2 \
         --success-only \
+        --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}" \
+        --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}" \
+        --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}" \
         --num-bins 2 \
         --ensemble-size 1 \
         --value-max-steps "${BINARY_DIAGNOSTIC_STEPS}" \
@@ -83,6 +114,9 @@ if [[ "${RUN_BINARY_DIAGNOSTIC}" != "0" ]]; then
 
     CRITIC_CONFIG=steam_value_model_sft_robocasa_xr1_diag_b2 \
     DIAGNOSTIC_STEPS="${BINARY_DIAGNOSTIC_STEPS}" \
+    EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES}" \
+    EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS}" \
+    EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES}" \
     PYTHON_BIN="${PYTHON_BIN}" \
     REPO_PATH="${REPO_PATH}" RUN_ROOT="${RUN_ROOT}" \
         bash tools/run_success_critic_diagnostic.sh
@@ -94,8 +128,12 @@ fi
 if [[ "${RUN_8BIN_DIAGNOSTIC}" != "0" ]]; then
     NUM_BINS=8 \
     DIAGNOSTIC_STEPS="${EIGHT_BIN_DIAGNOSTIC_STEPS}" \
+    EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES}" \
+    EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS}" \
+    EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES}" \
     PYTHON_BIN="${PYTHON_BIN}" \
-    REPO_PATH="${REPO_PATH}" RUN_ROOT="${RUN_ROOT}" DATA_ROOT="${DATA_ROOT}" \
+    REPO_PATH="${REPO_PATH}" RUN_ROOT="${RUN_ROOT}" \
+    CRITIC_DATA_ROOT="${CRITIC_DATA_ROOT}" \
     STEAM_VISION_MODEL="${STEAM_VISION_MODEL}" \
     STEAM_LANGUAGE_MODEL="${STEAM_LANGUAGE_MODEL}" \
         bash tools/run_steam_multibin_diagnostic.sh
@@ -105,12 +143,18 @@ unset STEAM_BINARY_STRICT_K || true
 
 # ---------------------------------------------------------------------------
 # Stage C: formal 32-bin normalized ensemble STEAM critic.
+# Value training reads only the verified success tree. Advantage labeling and
+# CFG-RL are generated from the separate full rollout tree.
 # ---------------------------------------------------------------------------
 "${PYTHON_BIN}" tools/generate_xr1_steam_configs.py \
-    --data-root "${DATA_ROOT}" \
+    --critic-data-root "${CRITIC_DATA_ROOT}" \
+    --rollout-data-root "${ROLLOUT_DATA_ROOT}" \
     --run-root "${RUN_ROOT}" \
     --config-dir "${CONFIG_PATH}" \
     --success-only \
+    --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}" \
+    --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}" \
+    --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}" \
     --num-bins 32 \
     --length-scale-enabled \
     --length-scale-percentile 90 \
@@ -127,13 +171,11 @@ unset STEAM_BINARY_STRICT_K || true
     --norm-stats-path "${ROBOCASA_NORM_STATS}"
 
 VALUE_CONFIG="${CONFIG_PATH}/steam_value_model_sft_robocasa_xr1.yaml"
-ADV_CONFIG="${CONFIG_PATH}/steam_compute_advantages_robocasa_xr1.yaml"
 CFG_CONFIG="${CONFIG_PATH}/cfg_rl_openpi_robocasa_xr1.yaml"
 FORMAL_CHECKPOINT="${RUN_ROOT}/steam_value_training/steam_xr1_robocasa_value/checkpoints/global_step_${FORMAL_STEPS}/actor"
 
 # The active YAML is the single source of truth for both mixture sampling and
-# temporal-stride sampling.  PairDataset reads this exported seed via the runtime
-# compatibility shim.
+# temporal-stride sampling.
 export STEAM_PAIR_SEED="$("${PYTHON_BIN}" - "${VALUE_CONFIG}" <<'PY'
 import sys
 from omegaconf import OmegaConf
@@ -143,7 +185,12 @@ PY
 )"
 echo "formal data.seed / STEAM_PAIR_SEED=${STEAM_PAIR_SEED}"
 
-"${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${VALUE_CONFIG}"
+"${PYTHON_BIN}" tools/validate_steam_success_config.py \
+    --config "${VALUE_CONFIG}" \
+    --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}" \
+    --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}" \
+    --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}"
+
 "${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${VALUE_CONFIG}" \
     --output-dir "${RUN_ROOT}/steam_diagnostics/formal_pretrain" \
@@ -183,8 +230,9 @@ fi
     --min-exact-improvement "${FORMAL_MIN_EXACT_IMPROVEMENT}" \
     --min-neighbor-improvement "${FORMAL_MIN_NEIGHBOR_IMPROVEMENT}"
 
-# Only a critic that beats empirical/constant baselines may label advantages.
-echo "$(date '+%F %T') starting STEAM advantage computation."
+# Only a critic that beats empirical/constant baselines may label advantages on
+# the full behavior-policy rollout tree.
+echo "$(date '+%F %T') starting STEAM advantage computation on full rollout data."
 "${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/process/compute_advantages_ensemble.py \
     --config-path "${CONFIG_PATH}" \
     --config-name steam_compute_advantages_robocasa_xr1
@@ -192,12 +240,12 @@ echo "$(date '+%F %T') starting STEAM advantage computation."
 echo "$(date '+%F %T') advantage computation finished."
 
 # ---------------------------------------------------------------------------
-# Stage D: real XR-1 batch through Pi0.5 transforms + CFGRL flow forward.
+# Stage D: real full-rollout XR-1 batch through Pi0.5 transforms + CFG forward.
 # ---------------------------------------------------------------------------
-echo "$(date '+%F %T') smoke-testing Pi0.5 CFG with a real XR-1 batch."
+echo "$(date '+%F %T') smoke-testing Pi0.5 CFG with a real XR-1 rollout batch."
 "${PYTHON_BIN}" tools/smoke_openpi_cfg_init.py \
     --config "${CFG_CONFIG}" \
-    --data-root "${DATA_ROOT}" \
+    --data-root "${ROLLOUT_DATA_ROOT}" \
     --device cuda
 
 echo "$(date '+%F %T') starting Pi0.5 CFG-RL."
