@@ -8,6 +8,7 @@ MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
 DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-512}"
 DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${RUN_ROOT}/steam_diagnostics/${CRITIC_CONFIG}}"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
+CONFIG_DIR="${REPO_PATH}/examples/offline_rl/config"
 LOG_ROOT="${RUN_ROOT}/steam_value_training/queued_success_critic"
 mkdir -p "${LOG_ROOT}" "${DIAGNOSTIC_DIR}"
 exec > >(tee -a "${LOG_ROOT}/queue.log") 2>&1
@@ -18,7 +19,6 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     exit 2
 fi
 
-# run_steam_sft.sh invokes `python`, so put the selected environment first.
 export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${REPO_PATH}/tools:${REPO_PATH}:${PYTHONPATH:-}"
 export HF_HOME="${RUN_ROOT}/hf_cache"
@@ -37,22 +37,20 @@ export OPENCV_LOG_LEVEL=off
 export STEAM_PAIR_SEED="${STEAM_PAIR_SEED:-42}"
 export STEAM_BINARY_STRICT_K=1
 
-CONFIG_PATH="${REPO_PATH}/examples/offline_rl/config/${CRITIC_CONFIG}.yaml"
+CONFIG_PATH="${CONFIG_DIR}/${CRITIC_CONFIG}.yaml"
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "ERROR: binary diagnostic config not found: ${CONFIG_PATH}" >&2
     echo "Generate it with:" >&2
     echo "  ${PYTHON_BIN} tools/generate_xr1_steam_configs.py \\" >&2
-    echo "    --data-root \"${RUN_ROOT}\" \\" >&2
-    echo "    --config-dir \"${REPO_PATH}/examples/offline_rl/config\" \\" >&2
-    echo "    --config-suffix _diag_b2 --success-only --num-bins 2 \\" >&2
-    echo "    --value-max-steps ${DIAGNOSTIC_STEPS} --value-save-interval ${DIAGNOSTIC_STEPS} \\" >&2
+    echo "    --data-root \"${RUN_ROOT}\" --run-root \"${RUN_ROOT}\" \\" >&2
+    echo "    --config-dir \"${CONFIG_DIR}\" --config-suffix _diag_b2 \\" >&2
+    echo "    --success-only --num-bins 2 --value-max-steps ${DIAGNOSTIC_STEPS} \\" >&2
+    echo "    --value-save-interval ${DIAGNOSTIC_STEPS} \\" >&2
     echo "    --value-experiment-name steam_xr1_success_diag_b2" >&2
     exit 2
 fi
 
 cd "${REPO_PATH}"
-
-# Parse every YAML entry and verify every episode is genuinely successful.
 "${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
 
 CONFIG_NUM_BINS="$("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
@@ -63,18 +61,17 @@ print(int(cfg.actor.model.num_bins))
 PY
 )"
 if [[ "${CONFIG_NUM_BINS}" != "2" ]]; then
-    echo "ERROR: ${CONFIG_PATH} has num_bins=${CONFIG_NUM_BINS}; this diagnostic requires a dedicated 2-bin config." >&2
+    echo "ERROR: ${CONFIG_PATH} has num_bins=${CONFIG_NUM_BINS}; this diagnostic requires 2 bins." >&2
     exit 2
 fi
 
-# Inspect the exact decoded +/-k pairs before GPU training.
 "${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${CONFIG_PATH}" \
     --output-dir "${DIAGNOSTIC_DIR}/pretrain" \
     --samples-per-dataset 64 \
     --save-pairs 12
 
-echo "$(date '+%F %T') queued success-only critic diagnostic"
+echo "$(date '+%F %T') queued success-only fixed-k binary critic diagnostic"
 echo "Python: ${PYTHON_BIN}"
 echo "STEAM_PAIR_SEED=${STEAM_PAIR_SEED}; strict_binary_k=${STEAM_BINARY_STRICT_K}"
 echo "Waiting for any GPU to have at least ${MIN_FREE_MIB} MiB free."
@@ -105,10 +102,12 @@ CHECKPOINT_PATH="${VALUE_LOG_PATH}/${VALUE_EXPERIMENT_NAME}/checkpoints/global_s
 
 echo "$(date '+%F %T') starting 2-bin fixed-k overfit diagnostic with ${CRITIC_CONFIG}"
 
-# Keep this intentionally easy: one critic, frozen backbones, no smoothing or
-# warmup. The purpose is to prove that the temporal ordering pipeline is learnable.
-bash examples/offline_rl/advantage_labeling/steam/run_steam_sft.sh \
-    "${CRITIC_CONFIG}" \
+# Call train_steam.py directly. The upstream run_steam_sft.sh unconditionally
+# overrides runner.logger.log_path, which makes checkpoint discovery depend on
+# a timestamped shell log directory and breaks reproducible automation.
+"${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/train_steam.py \
+    --config-path "${CONFIG_DIR}" \
+    --config-name "${CRITIC_CONFIG}" \
     actor.model.num_bins=2 \
     actor.model.ensemble_size=1 \
     actor.model.freeze_vision_encoder=true \
