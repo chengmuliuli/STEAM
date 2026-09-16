@@ -7,11 +7,19 @@ CRITIC_CONFIG="${CRITIC_CONFIG:-steam_value_model_sft_robocasa_xr1_diag_b2}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
 DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-512}"
 DIAGNOSTIC_DIR="${DIAGNOSTIC_DIR:-${RUN_ROOT}/steam_diagnostics/${CRITIC_CONFIG}}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
 LOG_ROOT="${RUN_ROOT}/steam_value_training/queued_success_critic"
 mkdir -p "${LOG_ROOT}" "${DIAGNOSTIC_DIR}"
 exec > >(tee -a "${LOG_ROOT}/queue.log") 2>&1
 
-export PATH="${REPO_PATH}/.venv/bin:${PATH}"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "ERROR: Python interpreter is not executable: ${PYTHON_BIN}" >&2
+    echo "Set PYTHON_BIN explicitly if this checkout uses another environment." >&2
+    exit 2
+fi
+
+# run_steam_sft.sh invokes `python`, so put the selected environment first.
+export PATH="$(dirname "${PYTHON_BIN}"):${PATH}"
 export PYTHONPATH="${REPO_PATH}/tools:${REPO_PATH}:${PYTHONPATH:-}"
 export HF_HOME="${RUN_ROOT}/hf_cache"
 export HF_DATASETS_CACHE="${RUN_ROOT}/hf_datasets_cache"
@@ -24,11 +32,16 @@ export AV_LOG_FORCE_NOCOLOR=1
 export LIBAV_LOG_LEVEL=quiet
 export OPENCV_LOG_LEVEL=off
 
+# Reproducible temporal-pair sampling. Binary diagnostics are deliberately
+# strict: every sample is exactly +/-k frames, never a clamped short tail pair.
+export STEAM_PAIR_SEED="${STEAM_PAIR_SEED:-42}"
+export STEAM_BINARY_STRICT_K=1
+
 CONFIG_PATH="${REPO_PATH}/examples/offline_rl/config/${CRITIC_CONFIG}.yaml"
 if [[ ! -f "${CONFIG_PATH}" ]]; then
     echo "ERROR: binary diagnostic config not found: ${CONFIG_PATH}" >&2
     echo "Generate it with:" >&2
-    echo "  python tools/generate_xr1_steam_configs.py \\" >&2
+    echo "  ${PYTHON_BIN} tools/generate_xr1_steam_configs.py \\" >&2
     echo "    --data-root \"${RUN_ROOT}\" \\" >&2
     echo "    --config-dir \"${REPO_PATH}/examples/offline_rl/config\" \\" >&2
     echo "    --config-suffix _diag_b2 --success-only --num-bins 2 \\" >&2
@@ -40,9 +53,9 @@ fi
 cd "${REPO_PATH}"
 
 # Parse every YAML entry and verify every episode is genuinely successful.
-python tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
+"${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
 
-CONFIG_NUM_BINS="$(python - "${CONFIG_PATH}" <<'PY'
+CONFIG_NUM_BINS="$("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
 import sys
 from omegaconf import OmegaConf
 cfg = OmegaConf.load(sys.argv[1])
@@ -54,14 +67,16 @@ if [[ "${CONFIG_NUM_BINS}" != "2" ]]; then
     exit 2
 fi
 
-# Inspect the exact decoded pairs before GPU training.
-python tools/diagnose_steam_pairs.py \
+# Inspect the exact decoded +/-k pairs before GPU training.
+"${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${CONFIG_PATH}" \
     --output-dir "${DIAGNOSTIC_DIR}/pretrain" \
     --samples-per-dataset 64 \
     --save-pairs 12
 
 echo "$(date '+%F %T') queued success-only critic diagnostic"
+echo "Python: ${PYTHON_BIN}"
+echo "STEAM_PAIR_SEED=${STEAM_PAIR_SEED}; strict_binary_k=${STEAM_BINARY_STRICT_K}"
 echo "Waiting for any GPU to have at least ${MIN_FREE_MIB} MiB free."
 while true; do
     gpu_info="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null || true)"
@@ -76,7 +91,7 @@ while true; do
     sleep 60
 done
 
-readarray -t CFG_FIELDS < <(python - "${CONFIG_PATH}" <<'PY'
+readarray -t CFG_FIELDS < <("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
 import sys
 from omegaconf import OmegaConf
 cfg = OmegaConf.load(sys.argv[1])
@@ -88,10 +103,10 @@ VALUE_LOG_PATH="${CFG_FIELDS[0]}"
 VALUE_EXPERIMENT_NAME="${CFG_FIELDS[1]}"
 CHECKPOINT_PATH="${VALUE_LOG_PATH}/${VALUE_EXPERIMENT_NAME}/checkpoints/global_step_${DIAGNOSTIC_STEPS}/actor"
 
-echo "$(date '+%F %T') starting 2-bin overfit diagnostic with ${CRITIC_CONFIG}"
+echo "$(date '+%F %T') starting 2-bin fixed-k overfit diagnostic with ${CRITIC_CONFIG}"
 
-# We still override the optimization-specific knobs so an accidentally edited
-# diagnostic YAML cannot reintroduce smoothing/warmup/backbone fine-tuning.
+# Keep this intentionally easy: one critic, frozen backbones, no smoothing or
+# warmup. The purpose is to prove that the temporal ordering pipeline is learnable.
 bash examples/offline_rl/advantage_labeling/steam/run_steam_sft.sh \
     "${CRITIC_CONFIG}" \
     actor.model.num_bins=2 \
@@ -111,7 +126,7 @@ if [[ ! -e "${CHECKPOINT_PATH}" ]]; then
     exit 4
 fi
 
-python tools/diagnose_steam_pairs.py \
+"${PYTHON_BIN}" tools/diagnose_steam_pairs.py \
     --config "${CONFIG_PATH}" \
     --output-dir "${DIAGNOSTIC_DIR}/posttrain" \
     --samples-per-dataset 64 \
@@ -119,4 +134,4 @@ python tools/diagnose_steam_pairs.py \
     --checkpoint "${CHECKPOINT_PATH}" \
     --device cuda
 
-echo "$(date '+%F %T') PASS success-only 2-bin critic diagnostic"
+echo "$(date '+%F %T') PASS success-only fixed-k 2-bin critic diagnostic"
