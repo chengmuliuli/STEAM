@@ -2,14 +2,17 @@
 set -euo pipefail
 
 REPO_PATH="${REPO_PATH:?Set REPO_PATH to the RLinf checkout}"
-RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the converted rollout workspace}"
-DATA_ROOT="${DATA_ROOT:-${RUN_ROOT}}"
+RUN_ROOT="${RUN_ROOT:?Set RUN_ROOT to the STEAM experiment workspace}"
+CRITIC_DATA_ROOT="${CRITIC_DATA_ROOT:-${DATA_ROOT:-${RUN_ROOT}}}"
 PYTHON_BIN="${PYTHON_BIN:-${REPO_PATH}/.venv/bin/python}"
 NUM_BINS="${NUM_BINS:-8}"
 DIAGNOSTIC_STEPS="${DIAGNOSTIC_STEPS:-2048}"
 MIN_FREE_MIB="${MIN_FREE_MIB:-60000}"
 MICRO_BATCH_SIZE="${MICRO_BATCH_SIZE:-8}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-64}"
+EXPECTED_SUCCESS_LEAVES="${EXPECTED_SUCCESS_LEAVES:-0}"
+EXPECTED_SUCCESS_TASKS="${EXPECTED_SUCCESS_TASKS:-0}"
+EXPECTED_SUCCESS_EPISODES="${EXPECTED_SUCCESS_EPISODES:-0}"
 CONFIG_DIR="${REPO_PATH}/examples/offline_rl/config"
 SUFFIX="_diag_b${NUM_BINS}"
 CONFIG_NAME="steam_value_model_sft_robocasa_xr1${SUFFIX}"
@@ -22,6 +25,10 @@ DIAGNOSTIC_DIR="${RUN_ROOT}/steam_diagnostics/${CONFIG_NAME}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
     echo "ERROR: Python interpreter is not executable: ${PYTHON_BIN}" >&2
+    exit 2
+fi
+if [[ ! -d "${CRITIC_DATA_ROOT}" ]]; then
+    echo "ERROR: critic data root does not exist: ${CRITIC_DATA_ROOT}" >&2
     exit 2
 fi
 if (( NUM_BINS <= 2 || NUM_BINS % 2 != 0 || 64 % NUM_BINS != 0 )); then
@@ -46,14 +53,23 @@ unset STEAM_BINARY_STRICT_K || true
 
 cd "${REPO_PATH}"
 
+EXPECT_ARGS=(
+    --expect-success-leaves "${EXPECTED_SUCCESS_LEAVES}"
+    --expect-success-tasks "${EXPECTED_SUCCESS_TASKS}"
+    --expect-success-episodes "${EXPECTED_SUCCESS_EPISODES}"
+)
+
 # Intentionally keep length scaling OFF in the 8-bin intermediate stage. This
 # isolates temporal-distance resolution from episode-length normalization.
+# The unused diagnostic advantage/CFG configs point at the same success root.
 "${PYTHON_BIN}" tools/generate_xr1_steam_configs.py \
-    --data-root "${DATA_ROOT}" \
+    --critic-data-root "${CRITIC_DATA_ROOT}" \
+    --rollout-data-root "${CRITIC_DATA_ROOT}" \
     --run-root "${RUN_ROOT}" \
     --config-dir "${CONFIG_DIR}" \
     --config-suffix "${SUFFIX}" \
     --success-only \
+    "${EXPECT_ARGS[@]}" \
     --num-bins "${NUM_BINS}" \
     --ensemble-size 1 \
     --value-max-steps "${DIAGNOSTIC_STEPS}" \
@@ -64,7 +80,10 @@ cd "${REPO_PATH}"
     --vision-model "${STEAM_VISION_MODEL}" \
     --language-model "${STEAM_LANGUAGE_MODEL}"
 
-"${PYTHON_BIN}" tools/validate_steam_success_config.py --config "${CONFIG_PATH}"
+"${PYTHON_BIN}" tools/validate_steam_success_config.py \
+    --config "${CONFIG_PATH}" \
+    "${EXPECT_ARGS[@]}"
+
 export STEAM_PAIR_SEED="$("${PYTHON_BIN}" - "${CONFIG_PATH}" <<'PY'
 import sys
 from omegaconf import OmegaConf
@@ -91,6 +110,7 @@ while true; do
 done
 
 echo "$(date '+%F %T') starting ${NUM_BINS}-bin intermediate critic diagnostic"
+echo "critic_data_root=${CRITIC_DATA_ROOT}"
 echo "Python=${PYTHON_BIN}; data.seed=${STEAM_PAIR_SEED}; GPU=${free_gpu}"
 
 "${PYTHON_BIN}" examples/offline_rl/advantage_labeling/steam/train_steam.py \
