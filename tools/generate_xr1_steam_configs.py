@@ -37,13 +37,7 @@ def _normal_success_paths(paths: list[Path]) -> list[Path]:
 
 
 def validate_success_leaf(path: Path) -> tuple[int, int]:
-    """Verify that every episode in a normal_success LeRobot leaf is successful.
-
-    We intentionally validate the underlying rollout metadata before emitting an
-    ``sft`` entry.  PairDataset treats ``sft`` as all-success, so silently
-    trusting a directory name here would turn a mislabeled failure episode into
-    positive temporal-order supervision.
-    """
+    """Verify that every episode in a normal_success LeRobot leaf is successful."""
     if "normal_success" not in path.parts:
         raise ValueError(f"success-only critic path is not under normal_success: {path}")
 
@@ -401,6 +395,7 @@ def main() -> int:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, default=None)
+    parser.add_argument("--config-suffix", default="", help="Suffix added to all generated config stems, e.g. _diag_b2")
     parser.add_argument("--success-only", action="store_true")
     parser.add_argument("--skip-success-content-validation", action="store_true")
     parser.add_argument("--num-bins", type=int, default=32)
@@ -433,6 +428,8 @@ def main() -> int:
         raise ValueError("--ensemble-size must be >= 1")
     if args.value_max_steps < 1:
         raise ValueError("--value-max-steps must be >= 1")
+    if args.config_suffix and not args.config_suffix.startswith("_"):
+        raise ValueError("--config-suffix must be empty or start with '_' (example: _diag_b2)")
 
     data_root = args.data_root.resolve()
     run_root = (args.run_root or data_root).resolve()
@@ -471,9 +468,10 @@ def main() -> int:
     )
     norm_stats_path = args.norm_stats_path or str(run_root / "robocasa_norm_stats")
 
+    suffix = args.config_suffix
     args.config_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
-        "steam_value_model_sft_robocasa_xr1.yaml": value_config(
+        f"steam_value_model_sft_robocasa_xr1{suffix}.yaml": value_config(
             critic_paths,
             run_root=run_root,
             experiment_name=args.value_experiment_name,
@@ -489,14 +487,14 @@ def main() -> int:
             vision_model=args.vision_model,
             language_model=args.language_model,
         ),
-        "steam_compute_advantages_robocasa_xr1.yaml": advantage_config(
+        f"steam_compute_advantages_robocasa_xr1{suffix}.yaml": advantage_config(
             paths,
             value_checkpoint=value_checkpoint,
             advantage_tag=advantage_tag,
             length_scale_enabled=args.length_scale_enabled,
             length_scale_percentile=args.length_scale_percentile,
         ),
-        "cfg_rl_openpi_robocasa_xr1.yaml": cfg_rl_config(
+        f"cfg_rl_openpi_robocasa_xr1{suffix}.yaml": cfg_rl_config(
             paths,
             run_root=run_root,
             experiment_name=args.cfg_experiment_name,
@@ -513,7 +511,7 @@ def main() -> int:
 
     print(
         "generated settings: "
-        f"success_only={args.success_only}, num_bins={args.num_bins}, "
+        f"suffix={suffix!r}, success_only={args.success_only}, num_bins={args.num_bins}, "
         f"length_scale={args.length_scale_enabled}, ensemble={args.ensemble_size}, "
         f"value_checkpoint={value_checkpoint}, advantage_tag={advantage_tag}"
     )
