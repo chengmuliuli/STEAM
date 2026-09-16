@@ -31,18 +31,23 @@ def find_v30_leaves(root: Path) -> list[Path]:
     return leaves
 
 
-def dataset_entries(paths: list[Path], *, include_only_success: bool = True) -> str:
+def dataset_entries(
+    paths: list[Path],
+    *,
+    include_only_success: bool = True,
+    only_success: bool = False,
+) -> str:
     lines = []
     for path in paths:
         lines.append(f'    - dataset_path: "{path}"')
         lines.append("      type: rollout")
         if include_only_success:
-            lines.append("      only_success: false")
+            lines.append(f"      only_success: {'true' if only_success else 'false'}")
         lines.append("      weight: 1.0")
     return "\n".join(lines)
 
 
-def value_config(paths: list[Path]) -> str:
+def value_config(paths: list[Path], *, only_success: bool = False) -> str:
     return f"""# Auto-generated for Xiaomi XR-1 RoboCasa365 policy rollouts.
 # All entries are behavior-policy rollouts, including successful and failed episodes.
 defaults:
@@ -77,7 +82,7 @@ runner:
 
 data:
   train_data_paths:
-{dataset_entries(paths)}
+{dataset_entries(paths, only_success=only_success)}
   balance_weights: true
   seed: 42
   dataset_type: rollout
@@ -85,7 +90,7 @@ data:
     - observation.images.robot0_agentview_left
     - observation.images.robot0_eye_in_hand
   k: 32
-  only_success: false
+  only_success: {'true' if only_success else 'false'}
   min_episode_length: null
   train_num_workers: 0
   eval_num_workers: 0
@@ -286,19 +291,37 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
+    parser.add_argument(
+        "--success-only",
+        action="store_true",
+        help=(
+            "Use only normal_success datasets for the value/critic config. "
+            "Advantage and CFG-RL configs retain all rollout datasets."
+        ),
+    )
     args = parser.parse_args()
     paths = find_v30_leaves(args.data_root.resolve())
     if not paths:
         raise RuntimeError(f"no converted v3.0 LeRobot leaves below {args.data_root}")
+    critic_paths = paths
+    if args.success_only:
+        critic_paths = [path for path in paths if "normal_success" in path.parts]
+        if not critic_paths:
+            raise RuntimeError(
+                "--success-only was requested, but no normal_success datasets were found"
+            )
     args.config_dir.mkdir(parents=True, exist_ok=True)
     outputs = {
-        "steam_value_model_sft_robocasa_xr1.yaml": value_config(paths),
+        "steam_value_model_sft_robocasa_xr1.yaml": value_config(
+            critic_paths, only_success=args.success_only
+        ),
         "steam_compute_advantages_robocasa_xr1.yaml": advantage_config(paths),
         "cfg_rl_openpi_robocasa_xr1.yaml": cfg_rl_config(paths),
     }
     for name, content in outputs.items():
         (args.config_dir / name).write_text(content, encoding="utf-8")
-        print(f"wrote {args.config_dir / name} ({len(paths)} datasets)")
+        count = len(critic_paths) if name.startswith("steam_value_model") else len(paths)
+        print(f"wrote {args.config_dir / name} ({count} datasets)")
     return 0
 
 
