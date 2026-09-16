@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Generate reproducible RLinf STEAM/CFG-RL configs for XR-1 RoboCasa rollouts."""
+"""Generate reproducible RLinf STEAM/CFG-RL configs for XR-1 RoboCasa rollouts.
+
+XR-1 success semantics are intentionally validated outside PairDataset:
+
+* critic supervision comes from ``normal_success`` and ``recovery_success``;
+* an episode is successful iff the *last frame* has
+  ``annotation.recovery.final_current_official_success == True``;
+* after validation these leaves are emitted as ``type: sft`` so PairDataset
+  does not require a synthetic ``is_success`` column;
+* advantage / CFG data may come from a separate full-rollout root containing
+  both successful and failed behavior-policy trajectories.
+"""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +26,8 @@ CAMERAS = (
     "observation.images.robot0_agentview_left",
     "observation.images.robot0_eye_in_hand",
 )
+SUCCESS_STATUSES = ("normal_success", "recovery_success")
+SUCCESS_FIELD = "annotation.recovery.final_current_official_success"
 
 
 def find_v30_leaves(root: Path) -> list[Path]:
@@ -32,14 +45,42 @@ def find_v30_leaves(root: Path) -> list[Path]:
     return leaves
 
 
-def _normal_success_paths(paths: list[Path]) -> list[Path]:
-    return [path for path in paths if "normal_success" in path.parts]
+def _success_status(path: Path) -> str:
+    matches = [status for status in SUCCESS_STATUSES if status in path.parts]
+    if len(matches) != 1:
+        raise ValueError(
+            f"success critic leaf must contain exactly one of {SUCCESS_STATUSES}, "
+            f"got {matches!r}: {path}"
+        )
+    return matches[0]
 
 
-def validate_success_leaf(path: Path) -> tuple[int, int]:
-    """Verify that every episode in a normal_success LeRobot leaf is successful."""
-    if "normal_success" not in path.parts:
-        raise ValueError(f"success-only critic path is not under normal_success: {path}")
+def _success_paths(paths: list[Path]) -> list[Path]:
+    return [
+        path
+        for path in paths
+        if any(status in path.parts for status in SUCCESS_STATUSES)
+    ]
+
+
+def _task_name_from_success_path(path: Path) -> str:
+    """Return the task directory immediately above the success-status folder."""
+    status = _success_status(path)
+    status_idx = path.parts.index(status)
+    if status_idx == 0:
+        raise ValueError(f"cannot infer task name above status folder in {path}")
+    return path.parts[status_idx - 1]
+
+
+def validate_success_leaf(path: Path) -> tuple[int, str]:
+    """Verify every episode in a success leaf using the XR-1 official label.
+
+    ``SUCCESS_FIELD`` is a per-frame *current success state*. Earlier frames are
+    therefore allowed to be false; only the episode's final frame must be true.
+    The function deliberately does not require or synthesize an ``is_success``
+    column.
+    """
+    status = _success_status(path)
 
     try:
         from rlinf.data.datasets.steam.pair_dataset import _LeRobotSource
@@ -51,35 +92,54 @@ def validate_success_leaf(path: Path) -> tuple[int, int]:
 
     source = _LeRobotSource(str(path), only_success=False, dataset_type="rollout")
     raw_dataset = source.base.hf_dataset
-    if "is_success" not in raw_dataset.column_names:
+    if SUCCESS_FIELD not in raw_dataset.column_names:
         raise ValueError(
-            f"{path} has no is_success column. Refusing to mark it as type=sft. "
-            "Use --skip-success-content-validation only if the dataset creation "
-            "pipeline independently guarantees all episodes are successful."
+            f"{path} has no {SUCCESS_FIELD!r} column. Refusing to mark it as "
+            "type=sft because success cannot be verified from the original XR-1 "
+            "annotation. Do not use a synthetic is_success column as a substitute."
         )
 
-    column = raw_dataset.data.column("is_success")
+    column = raw_dataset.data.column(SUCCESS_FIELD)
     bad: list[int] = []
     for episode, start in enumerate(source._ep_starts):
-        if not source._coerce_success_flag(column[int(start)].as_py()):
+        length = int(source.episode_length(episode))
+        if length < 1:
+            bad.append(episode)
+            continue
+        last_row = int(start) + length - 1
+        if not source._coerce_success_flag(column[last_row].as_py()):
             bad.append(episode)
 
     if bad:
         preview = ", ".join(str(v) for v in bad[:16])
         more = " ..." if len(bad) > 16 else ""
         raise ValueError(
-            f"{path} contains {len(bad)} failed episode(s) despite normal_success: "
-            f"{preview}{more}"
+            f"{path} ({status}) contains {len(bad)} episode(s) whose final "
+            f"{SUCCESS_FIELD} is false: {preview}{more}"
         )
-    return source.num_episodes(), len(bad)
+    return source.num_episodes(), _task_name_from_success_path(path)
 
 
-def validate_success_paths(paths: list[Path]) -> int:
-    total = 0
+def validate_success_paths(paths: list[Path]) -> dict[str, object]:
+    total_episodes = 0
+    tasks: set[str] = set()
     for path in paths:
-        episodes, _ = validate_success_leaf(path)
-        total += episodes
-    return total
+        episodes, task_name = validate_success_leaf(path)
+        total_episodes += episodes
+        tasks.add(task_name)
+    return {
+        "leaves": len(paths),
+        "episodes": total_episodes,
+        "tasks": len(tasks),
+        "task_names": sorted(tasks),
+    }
+
+
+def _enforce_expected(label: str, actual: int, expected: int) -> None:
+    if expected > 0 and actual != expected:
+        raise RuntimeError(
+            f"success dataset count mismatch for {label}: expected {expected}, got {actual}"
+        )
 
 
 def dataset_entries(
@@ -99,8 +159,14 @@ def dataset_entries(
     return "\n".join(lines)
 
 
-def _auto_tag(*, success_only: bool, num_bins: int, length_scale_enabled: bool,
-              length_scale_percentile: float, ensemble_size: int) -> str:
+def _auto_tag(
+    *,
+    success_only: bool,
+    num_bins: int,
+    length_scale_enabled: bool,
+    length_scale_percentile: float,
+    ensemble_size: int,
+) -> str:
     source = "succ" if success_only else "mixed"
     scale = f"ls{length_scale_percentile:g}" if length_scale_enabled else "nols"
     return f"steam_xr1_{source}_b{num_bins}_k{K}_{scale}_e{ensemble_size}"
@@ -127,7 +193,7 @@ def value_config(
     success_flag = "true" if success_only else "false"
     length_flag = "true" if length_scale_enabled else "false"
     source_comment = (
-        "# Critic uses validated normal_success trajectories as expert-like temporal supervision."
+        "# Critic uses validated normal_success + recovery_success trajectories as expert-like temporal supervision."
         if success_only
         else "# Critic uses all behavior-policy rollouts, including failed trajectories."
     )
@@ -162,7 +228,6 @@ runner:
   max_steps: {max_steps}
   val_check_interval: -1
   save_interval: {save_interval}
-
 data:
   train_data_paths:
 {dataset_entries(paths, dataset_type=dataset_type, only_success=success_only)}
@@ -392,12 +457,23 @@ critic:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", type=Path, required=True)
+    # Backward-compatible single-root option. New formal runs should use the
+    # two explicit roots below.
+    parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument("--critic-data-root", type=Path, default=None)
+    parser.add_argument("--rollout-data-root", type=Path, default=None)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--run-root", type=Path, default=None)
-    parser.add_argument("--config-suffix", default="", help="Suffix added to all generated config stems, e.g. _diag_b2")
+    parser.add_argument(
+        "--config-suffix",
+        default="",
+        help="Suffix added to all generated config stems, e.g. _diag_b2",
+    )
     parser.add_argument("--success-only", action="store_true")
     parser.add_argument("--skip-success-content-validation", action="store_true")
+    parser.add_argument("--expect-success-leaves", type=int, default=0)
+    parser.add_argument("--expect-success-episodes", type=int, default=0)
+    parser.add_argument("--expect-success-tasks", type=int, default=0)
     parser.add_argument("--num-bins", type=int, default=32)
     parser.add_argument("--length-scale-enabled", action="store_true")
     parser.add_argument("--length-scale-percentile", type=float, default=90.0)
@@ -429,27 +505,78 @@ def main() -> int:
     if args.value_max_steps < 1:
         raise ValueError("--value-max-steps must be >= 1")
     if args.config_suffix and not args.config_suffix.startswith("_"):
-        raise ValueError("--config-suffix must be empty or start with '_' (example: _diag_b2)")
+        raise ValueError(
+            "--config-suffix must be empty or start with '_' (example: _diag_b2)"
+        )
 
-    data_root = args.data_root.resolve()
-    run_root = (args.run_root or data_root).resolve()
-    paths = find_v30_leaves(data_root)
-    if not paths:
-        raise RuntimeError(f"no converted v3.0 LeRobot leaves below {data_root}")
+    critic_root_arg = args.critic_data_root or args.data_root
+    if critic_root_arg is None:
+        raise ValueError("set --critic-data-root (or legacy --data-root)")
+    rollout_root_arg = args.rollout_data_root or args.data_root or critic_root_arg
 
-    critic_paths = paths
+    critic_data_root = critic_root_arg.resolve()
+    rollout_data_root = rollout_root_arg.resolve()
+    run_root = (args.run_root or rollout_data_root).resolve()
+
+    critic_all_paths = find_v30_leaves(critic_data_root)
+    if not critic_all_paths:
+        raise RuntimeError(
+            f"no converted v3.0 LeRobot leaves below critic root {critic_data_root}"
+        )
+    rollout_paths = find_v30_leaves(rollout_data_root)
+    if not rollout_paths:
+        raise RuntimeError(
+            f"no converted v3.0 LeRobot leaves below rollout root {rollout_data_root}"
+        )
+
+    critic_paths = critic_all_paths
+    success_summary: dict[str, object] | None = None
     if args.success_only:
-        critic_paths = _normal_success_paths(paths)
+        critic_paths = _success_paths(critic_all_paths)
         if not critic_paths:
             raise RuntimeError(
-                "--success-only was requested, but no normal_success datasets were found"
+                "--success-only was requested, but no normal_success or "
+                "recovery_success datasets were found"
             )
-        if not args.skip_success_content_validation:
-            total_eps = validate_success_paths(critic_paths)
+
+        task_names = sorted({_task_name_from_success_path(path) for path in critic_paths})
+        if args.skip_success_content_validation:
+            if args.expect_success_episodes > 0:
+                raise ValueError(
+                    "cannot enforce --expect-success-episodes while "
+                    "--skip-success-content-validation is active"
+                )
+            success_summary = {
+                "leaves": len(critic_paths),
+                "episodes": None,
+                "tasks": len(task_names),
+                "task_names": task_names,
+            }
             print(
-                f"validated success-only critic data: {len(critic_paths)} leaf dataset(s), "
-                f"{total_eps} successful episode(s)"
+                "WARNING: success content validation skipped; this is not "
+                "recommended for formal training."
             )
+        else:
+            success_summary = validate_success_paths(critic_paths)
+
+        _enforce_expected(
+            "leaves", int(success_summary["leaves"]), args.expect_success_leaves
+        )
+        _enforce_expected(
+            "tasks", int(success_summary["tasks"]), args.expect_success_tasks
+        )
+        if success_summary["episodes"] is not None:
+            _enforce_expected(
+                "episodes",
+                int(success_summary["episodes"]),
+                args.expect_success_episodes,
+            )
+
+        print(f"critic datasets: {success_summary['leaves']}")
+        if success_summary["episodes"] is not None:
+            print(f"validated successful episodes: {success_summary['episodes']}")
+        print(f"tasks: {success_summary['tasks']}")
+        print("task names: " + ", ".join(success_summary["task_names"]))
 
     advantage_tag = args.advantage_tag or _auto_tag(
         success_only=args.success_only,
@@ -488,14 +615,14 @@ def main() -> int:
             language_model=args.language_model,
         ),
         f"steam_compute_advantages_robocasa_xr1{suffix}.yaml": advantage_config(
-            paths,
+            rollout_paths,
             value_checkpoint=value_checkpoint,
             advantage_tag=advantage_tag,
             length_scale_enabled=args.length_scale_enabled,
             length_scale_percentile=args.length_scale_percentile,
         ),
         f"cfg_rl_openpi_robocasa_xr1{suffix}.yaml": cfg_rl_config(
-            paths,
+            rollout_paths,
             run_root=run_root,
             experiment_name=args.cfg_experiment_name,
             advantage_tag=advantage_tag,
@@ -506,13 +633,14 @@ def main() -> int:
     for name, content in outputs.items():
         path = args.config_dir / name
         path.write_text(content, encoding="utf-8")
-        count = len(critic_paths) if name.startswith("steam_value_model") else len(paths)
+        count = len(critic_paths) if name.startswith("steam_value_model") else len(rollout_paths)
         print(f"wrote {path} ({count} datasets)")
 
     print(
         "generated settings: "
         f"suffix={suffix!r}, success_only={args.success_only}, num_bins={args.num_bins}, "
         f"length_scale={args.length_scale_enabled}, ensemble={args.ensemble_size}, "
+        f"critic_root={critic_data_root}, rollout_root={rollout_data_root}, "
         f"value_checkpoint={value_checkpoint}, advantage_tag={advantage_tag}"
     )
     return 0
