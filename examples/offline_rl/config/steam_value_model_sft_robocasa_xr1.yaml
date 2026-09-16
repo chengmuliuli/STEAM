@@ -1,5 +1,18 @@
-# Auto-generated for Xiaomi XR-1 RoboCasa365 policy rollouts.
-# All entries are behavior-policy rollouts, including successful and failed episodes.
+# XR-1 RoboCasa formal STEAM critic template.
+#
+# For a real multi-leaf workspace, regenerate this file with:
+#   python tools/generate_xr1_steam_configs.py \
+#     --data-root "$RUN_ROOT" \
+#     --run-root "$RUN_ROOT" \
+#     --config-dir examples/offline_rl/config \
+#     --success-only --num-bins 32 \
+#     --length-scale-enabled --length-scale-percentile 90 \
+#     --ensemble-size 3 \
+#     --micro-batch-size 8 --global-batch-size 64 \
+#     --value-max-steps 16000
+#
+# This committed template intentionally contains one env-selected success leaf;
+# the generator is the source of truth for enumerating all real dataset leaves.
 defaults:
   - model/steam_value_model@actor.model
   - hybrid_engines/fsdp@actor.fsdp_config
@@ -21,461 +34,31 @@ cluster:
 runner:
   task_type: sft
   logger:
-    log_path: "/path/to/steam_xr1_v30_copy/steam_value_training"
+    log_path: ${oc.env:RUN_ROOT}/steam_value_training
     project_name: rlinf
-    experiment_name: "steam_xr1_robocasa_value"
-    logger_backends: ["tensorboard"]
+    experiment_name: steam_xr1_robocasa_value
+    logger_backends: [tensorboard]
   max_epochs: -1
-  max_steps: 922
+  max_steps: 16000
   val_check_interval: -1
-  save_interval: 200
+  save_interval: 1000
 
 data:
   train_data_paths:
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker0/normal_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker0/recovery_failed/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker0/recovery_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker1/normal_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker1/recovery_failed/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker1/recovery_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker2/normal_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker2/recovery_failed/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker2/recovery_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker3/normal_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker3/recovery_failed/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CloseBlenderLid/gpu6_worker3/recovery_success/CloseBlenderLid/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker4/normal_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker4/recovery_failed/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker5/normal_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker5/recovery_failed/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker5/recovery_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker6/normal_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker6/recovery_failed/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker6/recovery_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker7/normal_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker7/recovery_failed/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/CoffeeSetupMug/gpu6_worker7/recovery_success/CoffeeSetupMug/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker2/recovery_failed/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker2/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker3/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker4/recovery_failed/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker4/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker5/recovery_failed/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker5/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker6/recovery_failed/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker6/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker7/recovery_failed/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/DeliverStraw/gpu5_worker7/recovery_success/DeliverStraw/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu3_worker6/recovery_failed/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu3_worker7/recovery_failed/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu3_worker7/recovery_success/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu4_worker1/recovery_failed/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu4_worker2/recovery_failed/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu4_worker2/recovery_success/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu4_worker3/recovery_failed/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/GetToastedBread/gpu4_worker3/recovery_success/GetToastedBread/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker1/normal_success/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker1/recovery_failed/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker2/normal_success/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker2/recovery_failed/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker3/normal_success/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker3/recovery_failed/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker4/recovery_failed/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PackIdenticalLunches/gpu3_worker5/recovery_failed/PackIdenticalLunches/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker0/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker0/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker1/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker2/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker2/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker3/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker3/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker4/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker4/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker5/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker5/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker6/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker7/recovery_failed/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/PrepareCoffee/gpu1_worker7/recovery_success/PrepareCoffee/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker4/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker4/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker5/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker5/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker6/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker6/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker7/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu4_worker7/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu5_worker0/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu5_worker0/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu5_worker1/recovery_failed/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/SearingMeat/gpu5_worker1/recovery_success/SearingMeat/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker0/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker1/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker1/recovery_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker2/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker3/normal_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker3/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker5/normal_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker5/recovery_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker6/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker7/normal_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker7/recovery_failed/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/StirVegetables/gpu2_worker7/recovery_success/StirVegetables/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker0/normal_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker0/recovery_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker1/normal_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker1/recovery_failed/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker1/recovery_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker2/normal_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker2/recovery_failed/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker2/recovery_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker3/normal_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker3/recovery_failed/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOffStove/gpu7_worker3/recovery_success/TurnOffStove/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker4/normal_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker4/recovery_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker5/normal_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker5/recovery_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker6/normal_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker6/recovery_failed/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker6/recovery_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker7/normal_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker7/recovery_failed/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
-      weight: 1.0
-    - dataset_path: "/path/to/steam_xr1_v30_copy/robocasa365_4_formal_batch8_20260910-000100/data/TurnOnMicrowave/gpu7_worker7/recovery_success/TurnOnMicrowave/lerobot"
-      type: rollout
-      only_success: false
+    - dataset_path: ${oc.env:XR1_SUCCESS_DATASET}
+      type: sft
+      only_success: true
       weight: 1.0
   balance_weights: true
   seed: 42
-  dataset_type: rollout
+  dataset_type: sft
   camera_keys:
     - observation.images.robot0_agentview_left
     - observation.images.robot0_eye_in_hand
   k: 32
-  only_success: false
+  only_success: true
+  length_scale_enabled: true
+  length_scale_percentile: 90
   min_episode_length: null
   train_num_workers: 0
   eval_num_workers: 0
@@ -488,10 +71,10 @@ algorithm:
   adv_type: gae
 
 actor:
-  group_name: "ActorGroup"
-  training_backend: "fsdp"
-  micro_batch_size: 112
-  global_batch_size: 896
+  group_name: ActorGroup
+  training_backend: fsdp
+  micro_batch_size: 8
+  global_batch_size: 64
   seed: 0
 
   model:
@@ -501,15 +84,15 @@ actor:
     label_smoothing: 0.05
     num_frames_per_pair: 2
     num_bins: 32
-    vision_repo_id: "/path/to/models/steam/siglip-so400m-patch14-384"
-    language_repo_id: "/path/to/models/steam/gemma-3-270m"
-    tokenizer_path: "/path/to/models/steam/gemma-3-270m"
+    vision_repo_id: ${oc.env:STEAM_VISION_MODEL}
+    language_repo_id: ${oc.env:STEAM_LANGUAGE_MODEL}
+    tokenizer_path: ${oc.env:STEAM_LANGUAGE_MODEL}
     freeze_vision_encoder: false
     freeze_language_model: false
     max_state_dim: 32
     state_discretization_bins: 256
     max_token_len: 200
-    ensemble_size: 1
+    ensemble_size: 3
     ensemble_head_seed_base: 0
     use_gradient_checkpointing: true
 
@@ -523,7 +106,7 @@ actor:
     clip_grad: 10.0
     lr_scheduler: constant
     lr_warmup_steps: 500
-    total_training_steps: 922
+    total_training_steps: 16000
     min_lr: 1.0e-6
 
   fsdp_config:
