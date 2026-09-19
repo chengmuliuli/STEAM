@@ -21,7 +21,7 @@ runner:
   logger:
     log_path: "${oc.env:STEAM_LOG_ROOT,/data-cfs/data1/qiuguolin/steam_official_robocasa365_pretrain}"
     project_name: steam_official
-    experiment_name: robocasa365_pretrain_critic
+    experiment_name: robocasa365_human10_critic
     logger_backends: ["tensorboard"]
   max_epochs: -1
   max_steps: 16000
@@ -30,7 +30,25 @@ runner:
 
 data:
   train_data_paths:
-    - dataset_path: "${oc.env:STEAM_ROBOCASA_DATA,/data-cfs/data1/qiuguolin/robocasa365-pretrain-mg-official-steam-task-ts}"
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/AdjustWaterTemperature
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/OpenElectricKettleLid
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/TurnOffMicrowave
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/TurnOnMicrowave
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/TurnOnBlender
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/OpenMicrowave
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/OpenDrawer
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/OpenBlenderLid
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/TurnOffStove
+      type: sft
+    - dataset_path: /data-cfs/data1/qiuguolin/robocasa365-human10-official-steam-v1/CoffeeSetupMug
       type: sft
   balance_weights: true
   seed: 42
